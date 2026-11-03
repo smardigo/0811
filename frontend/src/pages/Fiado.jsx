@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiClient, money, formatDate } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Plus, Pencil, Search, DollarSign, Trash2, History } from "lucide-react";
 
 export default function Fiado() {
+  const { user } = useAuth();
   const [customers, setCustomers] = useState([]);
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
@@ -139,9 +141,11 @@ export default function Fiado() {
               <Button size="icon" variant="ghost" onClick={() => setEditing(c)}>
                 <Pencil className="h-4 w-4" />
               </Button>
-              <Button size="icon" variant="ghost" onClick={() => removeCustomer(c)}>
-                <Trash2 className="h-4 w-4 text-red-500" />
-              </Button>
+              {user?.role === "gerente" && (
+                <Button size="icon" variant="ghost" onClick={() => removeCustomer(c)} data-testid={`delete-customer-${c.id}`}>
+                  <Trash2 className="h-4 w-4 text-red-500" />
+                </Button>
+              )}
             </div>
           </div>
         ))}

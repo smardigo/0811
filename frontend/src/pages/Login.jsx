@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth";
 import { TEST_IDS } from "@/constants/testIds";
 import { Croissant, Delete } from "lucide-react";
@@ -17,10 +16,6 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
-
-  if (user) {
-    navigate("/", { replace: true });
-  }
 
   const doLogin = async (payload) => {
     try {
@@ -46,6 +41,8 @@ export default function Login() {
   };
 
   const onPinBack = () => setPin((p) => p.slice(0, -1));
+
+  if (user) return <Navigate to="/" replace />;
 
   return (
     <div className="min-h-screen flex bakery-grain">
@@ -142,9 +139,6 @@ export default function Login() {
                 >
                   {busy ? "Entrando..." : "Entrar"}
                 </Button>
-                <Card className="p-3 text-xs text-stone-600 bg-amber-50/60 border-amber-200">
-                  <strong>Teste:</strong> admin / admin123 &nbsp;·&nbsp; caixa1 / caixa123
-                </Card>
               </form>
             </TabsContent>
 
@@ -208,9 +202,6 @@ export default function Login() {
                 >
                   Limpar
                 </button>
-              </div>
-              <div className="mt-4 text-center text-xs text-stone-500">
-                PINs teste: 1234 (gerente) · 5678 (operador)
               </div>
             </TabsContent>
           </Tabs>

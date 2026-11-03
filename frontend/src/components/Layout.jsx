@@ -1,11 +1,12 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { apiClient } from "@/lib/api";
 import {
-  Croissant, ShoppingBag, ClipboardList, BookOpen, UserCog, CalendarDays,
-  PackageSearch, LineChart, Users, LogOut, Bell
+  Croissant, ShoppingBag, ClipboardList, BookOpen, CalendarDays,
+  PackageSearch, LineChart, Users, LogOut, Bell, Menu, UtensilsCrossed
 } from "lucide-react";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TEST_IDS } from "@/constants/testIds";
@@ -15,6 +16,8 @@ export default function Layout() {
   const navigate = useNavigate();
   const [clock, setClock] = useState(new Date());
   const [alertsCount, setAlertsCount] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
 
   useEffect(() => {
     const t = setInterval(() => setClock(new Date()), 1000);
@@ -22,10 +25,17 @@ export default function Layout() {
   }, []);
 
   useEffect(() => {
-    if (user?.role === "gerente") {
+    if (user?.role !== "gerente") return undefined;
+    const fetchAlerts = () => {
       apiClient.get("/estoque/alertas").then((r) => setAlertsCount(r.data.length)).catch(() => {});
-    }
-  }, [user]);
+    };
+    fetchAlerts();
+    window.addEventListener("estoque-changed", fetchAlerts);
+    const t = setInterval(fetchAlerts, 30000);
+    return () => { clearInterval(t); window.removeEventListener("estoque-changed", fetchAlerts); };
+  }, [user, location.pathname]);
+
+  useEffect(() => { setMenuOpen(false); }, [location.pathname]);
 
   const isGerente = user?.role === "gerente";
 
@@ -34,7 +44,7 @@ export default function Layout() {
     { to: "/comandas", label: "Comandas", icon: ClipboardList, testid: TEST_IDS.sidebarComandas, roles: ["gerente", "operador"] },
     { to: "/encomendas", label: "Encomendas", icon: CalendarDays, testid: TEST_IDS.sidebarEncomendas, roles: ["gerente", "operador"] },
     { to: "/fiado", label: "Fiado", icon: BookOpen, testid: TEST_IDS.sidebarFiado, roles: ["gerente", "operador"] },
-    { to: "/cardapio", label: "Cardápio", icon: UserCog, testid: TEST_IDS.sidebarCardapio, roles: ["gerente"] },
+    { to: "/cardapio", label: "Cardápio", icon: UtensilsCrossed, testid: TEST_IDS.sidebarCardapio, roles: ["gerente"] },
     { to: "/estoque", label: "Estoque", icon: PackageSearch, testid: TEST_IDS.sidebarEstoque, roles: ["gerente"] },
     { to: "/dashboard", label: "Dashboard", icon: LineChart, testid: TEST_IDS.sidebarDashboard, roles: ["gerente"] },
     { to: "/usuarios", label: "Usuários", icon: Users, testid: TEST_IDS.sidebarUsuarios, roles: ["gerente"] },
@@ -43,10 +53,8 @@ export default function Layout() {
   const timeStr = clock.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const dateStr = clock.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
 
-  return (
-    <div className="min-h-screen flex bg-[#FAF7F2] bakery-grain">
-      {/* Sidebar */}
-      <aside className="w-64 bg-stone-900 text-amber-50 flex flex-col shrink-0 border-r border-stone-800 no-print">
+  const sidebar = (
+      <>
         <div className="p-5 border-b border-stone-800">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-amber-600 flex items-center justify-center shrink-0">
@@ -103,13 +111,28 @@ export default function Layout() {
             Sair
           </Button>
         </div>
+      </>
+  );
+
+  return (
+    <div className="h-screen flex bg-[#FAF7F2] bakery-grain">
+      <aside className="hidden lg:flex w-64 bg-stone-900 text-amber-50 flex-col shrink-0 border-r border-stone-800 no-print">
+        {sidebar}
       </aside>
+      <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
+        <SheetContent side="left" className="w-64 p-0 bg-stone-900 text-amber-50 border-stone-800 flex flex-col" data-testid="mobile-sidebar">
+          {sidebar}
+        </SheetContent>
+      </Sheet>
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 bg-white border-b border-stone-200 flex items-center justify-between px-6 no-print">
-          <div className="flex items-center gap-4">
-            <span className="text-xs uppercase tracking-widest text-stone-400">{dateStr}</span>
+        <header className="h-14 bg-white border-b border-stone-200 flex items-center justify-between px-3 sm:px-6 no-print gap-2">
+          <div className="flex items-center gap-2 sm:gap-4">
+            <Button size="icon" variant="ghost" className="lg:hidden" onClick={() => setMenuOpen(true)} data-testid="mobile-menu-button">
+              <Menu className="h-5 w-5" />
+            </Button>
+            <span className="hidden sm:inline text-xs uppercase tracking-widest text-stone-400">{dateStr}</span>
             <span className="pos-number text-lg text-stone-800">{timeStr}</span>
           </div>
           <div className="flex items-center gap-3">
@@ -120,10 +143,10 @@ export default function Layout() {
                 data-testid="topbar-stock-alert"
               >
                 <Bell className="h-3.5 w-3.5" />
-                {alertsCount} {alertsCount === 1 ? "item" : "itens"} em alerta
+                {alertsCount}<span className="hidden sm:inline"> {alertsCount === 1 ? "item" : "itens"} em alerta</span>
               </button>
             )}
-            <div className="text-xs text-stone-500">
+            <div className="hidden md:block text-xs text-stone-500">
               Logado como <strong className="text-stone-700">{user?.name}</strong>
             </div>
           </div>

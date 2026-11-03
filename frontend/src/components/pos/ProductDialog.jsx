@@ -78,7 +78,7 @@ export default function ProductDialog({ product, onClose, onConfirm }) {
                 Sabores <Badge variant="outline" className="text-xs">até 4 · {halves.length}/4</Badge>
               </Label>
               <p className="text-xs text-stone-500 mb-2">
-                Monte a pizza inteira ou meio-a-meio. Valor cobrado é do sabor mais caro.
+                Monte a pizza inteira ou meio-a-meio. O valor é o do tamanho escolhido.
               </p>
               <div className="grid grid-cols-2 gap-2">
                 {product.pizza_flavors.map((f, i) => (

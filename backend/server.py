@@ -2,11 +2,13 @@
 import asyncio
 import logging
 import os
+import re
 import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, List, Optional
+from zoneinfo import ZoneInfo
 
 import bcrypt
 import jwt
@@ -24,7 +26,8 @@ load_dotenv(ROOT_DIR / ".env")
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-JWT_SECRET = os.environ.get("JWT_SECRET", "padaria-tradicao-secret-2026")
+JWT_SECRET = os.environ["JWT_SECRET"]
+APP_TZ = ZoneInfo(os.environ["APP_TZ"])
 JWT_ALGO = "HS256"
 JWT_EXPIRE_HOURS = 12
 
@@ -49,6 +52,29 @@ def new_id() -> str:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def local_today():
+    return datetime.now(APP_TZ).date()
+
+
+def local_date(iso: Optional[str]) -> str:
+    if not iso:
+        return ""
+    return datetime.fromisoformat(iso).astimezone(APP_TZ).date().isoformat()
+
+
+def validate_pin(pin: Optional[str]):
+    if pin and not re.fullmatch(r"\d{4}", pin):
+        raise HTTPException(400, "PIN deve ter 4 dígitos")
+
+
+async def ensure_pin_unique(pin: Optional[str], exclude_uid: Optional[str] = None):
+    if not pin:
+        return
+    async for u in db.users.find({"pin_hash": {"$ne": None}}, {"id": 1, "pin_hash": 1}):
+        if u["id"] != exclude_uid and check_password(pin, u["pin_hash"]):
+            raise HTTPException(400, "PIN já está em uso por outro usuário")
 
 
 def hash_password(pw: str) -> str:
@@ -189,7 +215,7 @@ class OrderItem(BaseModel):
 
 class OrderItemIn(BaseModel):
     product_id: str
-    quantity: float = 1
+    quantity: float = Field(default=1, gt=0)
     variations_data: dict = {}
     pizza_halves: List[str] = []
     notes: Optional[str] = None
@@ -197,7 +223,7 @@ class OrderItemIn(BaseModel):
 
 class Payment(BaseModel):
     method: str  # 'dinheiro' | 'cartao' | 'pix' | 'fiado'
-    amount: float
+    amount: float = Field(gt=0)
     change: float = 0.0
     customer_id: Optional[str] = None  # required for fiado
 
@@ -229,7 +255,7 @@ class OrderCreate(BaseModel):
 
 class OrderUpdate(BaseModel):
     status: Optional[str] = None
-    discount: Optional[float] = None
+    discount: Optional[float] = Field(default=None, ge=0)
     notes: Optional[str] = None
     table_label: Optional[str] = None
     customer_id: Optional[str] = None
@@ -237,7 +263,7 @@ class OrderUpdate(BaseModel):
 
 class CheckoutRequest(BaseModel):
     payments: List[Payment]
-    discount: float = 0.0
+    discount: float = Field(default=0.0, ge=0)
 
 
 class Encomenda(BaseModel):
@@ -301,13 +327,13 @@ class EstoqueMovimento(BaseModel):
 class EstoqueMovimentoIn(BaseModel):
     item_id: str
     type: str
-    quantity: float
+    quantity: float = Field(gt=0)
     reason: Optional[str] = None
 
 
 class FiadoPayment(BaseModel):
     customer_id: str
-    amount: float
+    amount: float = Field(gt=0)
     method: str = "dinheiro"  # dinheiro | cartao | pix
     note: Optional[str] = None
 
@@ -564,6 +590,8 @@ async def create_user(u: UserCreate, _: dict = Depends(require_gerente)):
         raise HTTPException(400, "Perfil inválido")
     if await db.users.find_one({"username": u.username}):
         raise HTTPException(400, "Usuário já existe")
+    validate_pin(u.pin)
+    await ensure_pin_unique(u.pin)
     doc = {
         "id": new_id(),
         "username": u.username,
@@ -590,6 +618,8 @@ async def update_user(uid: str, u: UserUpdate, _: dict = Depends(require_gerente
     if u.password:
         upd["password_hash"] = hash_password(u.password)
     if u.pin is not None:
+        validate_pin(u.pin)
+        await ensure_pin_unique(u.pin, uid)
         upd["pin_hash"] = hash_password(u.pin) if u.pin else None
     if upd:
         await db.users.update_one({"id": uid}, {"$set": upd})
@@ -681,9 +711,10 @@ async def delete_product(pid: str, _: dict = Depends(require_gerente)):
 async def list_customers(q: Optional[str] = None, _: dict = Depends(require_any)):
     query = {}
     if q:
-        query = {"$or": [{"name": {"$regex": q, "$options": "i"}},
-                         {"phone": {"$regex": q, "$options": "i"}},
-                         {"cpf": {"$regex": q, "$options": "i"}}]}
+        rq = re.escape(q)
+        query = {"$or": [{"name": {"$regex": rq, "$options": "i"}},
+                         {"phone": {"$regex": rq, "$options": "i"}},
+                         {"cpf": {"$regex": rq, "$options": "i"}}]}
     return await db.customers.find(query, {"_id": 0}).sort("name", 1).to_list(500)
 
 
@@ -794,13 +825,10 @@ async def _build_item(it: OrderItemIn) -> OrderItem:
             raise HTTPException(400, "Selecione os sabores da pizza")
         if len(halves) > 4:
             raise HTTPException(400, "Máximo 4 sabores")
-        # pricing: base_price is the full price (maior sabor equal base)
-        text_parts.append(f"Sabores: {' / '.join(halves)}")
-    else:
-        delta, text = _format_variations(product, it.variations_data or {})
-        unit_price += delta
-        if text:
-            text_parts.append(text)
+    delta, text = _format_variations(product, it.variations_data or {})
+    unit_price += delta
+    if text:
+        text_parts.append(text)
 
     total = unit_price * it.quantity
     return OrderItem(
@@ -931,33 +959,44 @@ async def checkout_order(oid: str, req: CheckoutRequest, user: dict = Depends(re
     if paid + 0.009 < order["total"]:
         raise HTTPException(400, f"Pagamento insuficiente: R$ {paid:.2f} < R$ {order['total']:.2f}")
 
-    # Handle fiado: must have customer, update debt
-    fiado_total = 0.0
+    non_cash = sum(p.amount for p in req.payments if p.method != "dinheiro")
+    if non_cash > order["total"] + 0.009:
+        raise HTTPException(400, "Cartão, Pix e Fiado não podem ultrapassar o total (troco só em dinheiro)")
+
+    # Validate all fiado payments before writing anything
+    fiado_plan: dict[str, dict] = {}
     for p in req.payments:
         if p.method == "fiado":
             cid = p.customer_id or order.get("customer_id")
             if not cid:
                 raise HTTPException(400, "Fiado requer cliente")
-            customer = await db.customers.find_one({"id": cid})
-            if not customer:
-                raise HTTPException(404, "Cliente de fiado não encontrado")
-            new_balance = customer.get("debt_balance", 0) + p.amount
-            if customer.get("credit_limit", 0) > 0 and new_balance > customer["credit_limit"]:
-                raise HTTPException(400, f"Limite de crédito excedido para {customer['name']}")
-            await db.customers.update_one({"id": cid}, {"$set": {"debt_balance": new_balance}})
-            await db.fiado_mov.insert_one({
-                "id": new_id(),
-                "customer_id": cid,
-                "customer_name": customer["name"],
-                "type": "venda",
-                "amount": p.amount,
-                "order_id": oid,
-                "order_number": order["number"],
-                "user_name": user["name"],
-                "date": now_iso(),
-            })
-            fiado_total += p.amount
+            if cid not in fiado_plan:
+                customer = await db.customers.find_one({"id": cid})
+                if not customer:
+                    raise HTTPException(404, "Cliente de fiado não encontrado")
+                fiado_plan[cid] = {"customer": customer, "amount": 0.0}
+            fiado_plan[cid]["amount"] += p.amount
             p.customer_id = cid
+    for cid, plan in fiado_plan.items():
+        customer = plan["customer"]
+        new_balance = customer.get("debt_balance", 0) + plan["amount"]
+        if customer.get("credit_limit", 0) > 0 and new_balance > customer["credit_limit"]:
+            raise HTTPException(400, f"Limite de crédito excedido para {customer['name']}")
+
+    for cid, plan in fiado_plan.items():
+        customer = plan["customer"]
+        await db.customers.update_one({"id": cid}, {"$inc": {"debt_balance": plan["amount"]}})
+        await db.fiado_mov.insert_one({
+            "id": new_id(),
+            "customer_id": cid,
+            "customer_name": customer["name"],
+            "type": "venda",
+            "amount": plan["amount"],
+            "order_id": oid,
+            "order_number": order["number"],
+            "user_name": user["name"],
+            "date": now_iso(),
+        })
 
     # Compute change (only on dinheiro)
     change = max(0.0, paid - order["total"])
@@ -1125,10 +1164,13 @@ async def list_movimentos(item_id: Optional[str] = None, _: dict = Depends(requi
 # ============================================================
 @api.get("/dashboard")
 async def dashboard(_: dict = Depends(require_gerente)):
-    today = datetime.now(timezone.utc).date().isoformat()
-    # closed orders today
-    orders = await db.orders.find({"status": "fechada"}, {"_id": 0}).to_list(2000)
-    today_orders = [o for o in orders if (o.get("closed_at") or "").startswith(today)]
+    today_d = local_today()
+    today = today_d.isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    orders = await db.orders.find({"status": "fechada", "closed_at": {"$gte": since}}, {"_id": 0}).to_list(20000)
+    for o in orders:
+        o["_local_day"] = local_date(o.get("closed_at"))
+    today_orders = [o for o in orders if o["_local_day"] == today]
 
     faturamento_hoje = sum(o["total"] for o in today_orders)
     num_vendas_hoje = len(today_orders)
@@ -1138,7 +1180,8 @@ async def dashboard(_: dict = Depends(require_gerente)):
     por_pagamento = {}
     for o in today_orders:
         for p in o.get("payments", []):
-            por_pagamento[p["method"]] = por_pagamento.get(p["method"], 0) + p["amount"]
+            net = p["amount"] - p.get("change", 0)
+            por_pagamento[p["method"]] = round(por_pagamento.get(p["method"], 0) + net, 2)
 
     # top produtos
     prod_count: dict[str, dict] = {}
@@ -1165,8 +1208,8 @@ async def dashboard(_: dict = Depends(require_gerente)):
     # 7-day sales trend
     trend = []
     for delta in range(6, -1, -1):
-        d = (datetime.now(timezone.utc).date() - timedelta(days=delta)).isoformat()
-        day_total = sum(o["total"] for o in orders if (o.get("closed_at") or "").startswith(d))
+        d = (today_d - timedelta(days=delta)).isoformat()
+        day_total = sum(o["total"] for o in orders if o["_local_day"] == d)
         trend.append({"date": d, "total": round(day_total, 2)})
 
     return {

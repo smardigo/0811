@@ -60,7 +60,7 @@ export default function ReceiptDialog({ order, onClose }) {
                 {it.variations_text && (
                   <div className="text-[10px] text-stone-600 pl-3">{it.variations_text}</div>
                 )}
-                {it.pizza_halves?.length > 0 && (
+                {it.pizza_halves?.length > 0 && !it.variations_text?.includes("Sabores:") && (
                   <div className="text-[10px] text-stone-600 pl-3">
                     Sabores: {it.pizza_halves.join(" / ")}
                   </div>

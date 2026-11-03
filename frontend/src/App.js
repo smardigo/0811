@@ -36,7 +36,7 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Toaster position="top-right" richColors />
+        <Toaster position="bottom-right" richColors />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route element={<Protected><Layout /></Protected>}>

@@ -176,10 +176,10 @@ export default function Caixa() {
   }
 
   return (
-    <div className="h-full flex overflow-hidden">
+    <div className="lg:h-full flex flex-col lg:flex-row lg:overflow-hidden">
       {/* Left: product grid */}
-      <div className="flex-1 flex flex-col overflow-hidden border-r border-stone-200 bg-white">
-        <div className="px-6 py-4 border-b border-stone-200 flex items-center gap-3">
+      <div className="flex-1 flex flex-col lg:overflow-hidden lg:border-r border-stone-200 bg-white">
+        <div className="px-3 sm:px-6 py-4 border-b border-stone-200 flex items-center gap-3">
           <Button size="sm" variant="ghost" onClick={backToList} data-testid="caixa-back-button">
             <ArrowLeft className="h-4 w-4 mr-1" /> Comandas
           </Button>
@@ -191,13 +191,13 @@ export default function Caixa() {
           </div>
           <StatusBadge status={order.status} />
         </div>
-        <div className="flex-1 overflow-y-auto scrollbar-thin">
+        <div className="flex-1 lg:overflow-y-auto scrollbar-thin">
           <ProductPicker onPick={(p) => setProductDialog(p)} />
         </div>
       </div>
 
       {/* Right: order summary */}
-      <div className="w-[380px] flex flex-col bg-stone-50 shrink-0">
+      <div className="w-full lg:w-[380px] flex flex-col bg-stone-50 shrink-0 border-t lg:border-t-0 border-stone-200">
         <div className="p-4 border-b border-stone-200">
           <div className="text-xs uppercase tracking-widest text-stone-400 font-semibold mb-1">Pedido atual</div>
           <h2 className="font-display font-bold text-xl text-stone-900">
@@ -223,7 +223,7 @@ export default function Caixa() {
                     {it.variations_text && (
                       <div className="text-xs text-stone-500 mt-0.5">{it.variations_text}</div>
                     )}
-                    {it.pizza_halves?.length > 0 && (
+                    {it.pizza_halves?.length > 0 && !it.variations_text?.includes("Sabores:") && (
                       <div className="text-xs text-amber-700 mt-0.5">
                         {it.pizza_halves.length === 1 ? it.pizza_halves[0] : it.pizza_halves.join(" / ")}
                       </div>

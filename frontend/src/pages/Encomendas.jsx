@@ -9,7 +9,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, CalendarDays, X, Pizza } from "lucide-react";
+import { Plus, Trash2, CalendarDays, X, Pizza, SlidersHorizontal } from "lucide-react";
+import ProductDialog from "@/components/pos/ProductDialog";
+
+const localToday = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const describeItem = (it) => {
+  const parts = [];
+  if (it.pizza_halves?.length) parts.push(`Sabores: ${it.pizza_halves.join(" / ")}`);
+  for (const [k, v] of Object.entries(it.variations_data || {})) {
+    const val = Array.isArray(v) ? v.join(", ") : v;
+    if (val) parts.push(`${k}: ${val}`);
+  }
+  return parts.join(" | ");
+};
 
 const STATUS_COLORS = {
   pendente: "bg-blue-100 text-blue-800",
@@ -30,6 +46,7 @@ export default function Encomendas() {
   const [list, setList] = useState([]);
   const [products, setProducts] = useState([]);
   const [newForm, setNewForm] = useState(null);
+  const [picking, setPicking] = useState(null);
 
   const load = async () => {
     const r = await apiClient.get("/encomendas");
@@ -42,7 +59,7 @@ export default function Encomendas() {
   }, []);
 
   const open = () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localToday();
     setNewForm({
       customer_name: "", customer_phone: "", delivery_date: today, delivery_time: "08:00",
       items: [], deposit: 0, notes: "",
@@ -86,7 +103,7 @@ export default function Encomendas() {
     load();
   };
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localToday();
   const grouped = {};
   for (const e of list) {
     const key = e.delivery_date;
@@ -95,8 +112,8 @@ export default function Encomendas() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-6 max-w-6xl mx-auto">
+      <div className="flex flex-wrap gap-3 items-center justify-between mb-6">
         <div>
           <h1 className="font-display text-3xl font-bold text-stone-900">Encomendas</h1>
           <p className="text-sm text-stone-500 mt-1">Pedidos futuros e entregas programadas</p>
@@ -129,7 +146,7 @@ export default function Encomendas() {
                     <div className="flex items-start justify-between mb-2">
                       <div>
                         <div className="font-display font-bold">{e.customer_name}</div>
-                        <div className="text-xs text-stone-500">{e.customer_phone} · {e.delivery_time}</div>
+                        <div className="text-xs text-stone-500">{[e.customer_phone, e.delivery_time].filter(Boolean).join(" · ")}</div>
                       </div>
                       <Badge className={STATUS_COLORS[e.status]}>{STATUS_LABEL[e.status]}</Badge>
                     </div>
@@ -137,6 +154,7 @@ export default function Encomendas() {
                       {e.items.map((it, i) => (
                         <div key={i}>
                           {it.quantity}× {it.product_name}
+                          {it.variations_text && <span className="text-stone-500"> — {it.variations_text}</span>}
                           {it.pizza_halves?.length > 0 && <span className="text-amber-700"> ({it.pizza_halves.join("/")})</span>}
                         </div>
                       ))}
@@ -175,8 +193,8 @@ export default function Encomendas() {
         <Dialog open onOpenChange={() => setNewForm(null)}>
           <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="encomenda-dialog">
             <DialogHeader><DialogTitle>Nova encomenda</DialogTitle></DialogHeader>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2"><Label>Nome do cliente *</Label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2"><Label>Nome do cliente *</Label>
                 <Input value={newForm.customer_name} onChange={(e) => setNewForm({ ...newForm, customer_name: e.target.value })} data-testid="encomenda-customer" /></div>
               <div><Label>Telefone</Label>
                 <Input value={newForm.customer_phone} onChange={(e) => setNewForm({ ...newForm, customer_phone: e.target.value })} /></div>
@@ -187,7 +205,7 @@ export default function Encomendas() {
               <div><Label>Sinal (R$)</Label>
                 <Input type="number" step="0.01" value={newForm.deposit} onChange={(e) => setNewForm({ ...newForm, deposit: parseFloat(e.target.value) || 0 })} /></div>
 
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
                 <div className="flex items-center justify-between mb-2">
                   <Label>Itens</Label>
                   <Button size="sm" variant="outline" onClick={addItem} data-testid="add-encomenda-item">+ item</Button>
@@ -195,35 +213,36 @@ export default function Encomendas() {
                 <div className="space-y-2">
                   {newForm.items.map((it, i) => {
                     const prod = products.find((p) => p.id === it.product_id);
+                    const needsOptions = prod && (prod.is_pizza || prod.variations?.length > 0);
+                    const desc = describeItem(it);
                     return (
                       <div key={i} className="p-3 bg-stone-50 rounded space-y-2">
                         <div className="flex gap-2">
-                          <Select value={it.product_id} onValueChange={(v) => updItem(i, { product_id: v, pizza_halves: [] })}>
+                          <Select
+                            value={it.product_id}
+                            onValueChange={(v) => {
+                              const p = products.find((x) => x.id === v);
+                              updItem(i, { product_id: v, pizza_halves: [], variations_data: {} });
+                              if (p && (p.is_pizza || p.variations?.length > 0)) setPicking({ index: i, product: p });
+                            }}
+                          >
                             <SelectTrigger data-testid={`encomenda-item-${i}`}><SelectValue placeholder="Selecione produto..." /></SelectTrigger>
                             <SelectContent className="max-h-64">
                               {products.map((p) => <SelectItem key={p.id} value={p.id}>{p.name} ({money(p.base_price)})</SelectItem>)}
                             </SelectContent>
                           </Select>
-                          <Input type="number" min={1} value={it.quantity} onChange={(e) => updItem(i, { quantity: parseFloat(e.target.value) || 1 })} className="w-20" />
-                          <Button size="icon" variant="ghost" onClick={() => delItem(i)}><X className="h-4 w-4" /></Button>
+                          <Input type="number" min={1} value={it.quantity} onChange={(e) => updItem(i, { quantity: parseFloat(e.target.value) || 1 })} className="w-20" data-testid={`encomenda-item-qty-${i}`} />
+                          <Button size="icon" variant="ghost" onClick={() => delItem(i)} data-testid={`encomenda-item-remove-${i}`}><X className="h-4 w-4" /></Button>
                         </div>
-                        {prod?.is_pizza && (
-                          <div className="pl-2">
-                            <div className="text-xs mb-1 text-amber-700 flex items-center gap-1"><Pizza className="h-3 w-3" /> Sabores (até 4):</div>
-                            <div className="flex flex-wrap gap-1">
-                              {prod.pizza_flavors.map((f) => (
-                                <button
-                                  key={f}
-                                  type="button"
-                                  onClick={() => {
-                                    const cur = it.pizza_halves || [];
-                                    const nx = cur.includes(f) ? cur.filter((x) => x !== f) : cur.length < 4 ? [...cur, f] : cur;
-                                    updItem(i, { pizza_halves: nx });
-                                  }}
-                                  className={`text-xs px-2 py-0.5 rounded-full border ${(it.pizza_halves || []).includes(f) ? "bg-amber-100 border-amber-500" : "bg-white border-stone-200"}`}
-                                >{f}</button>
-                              ))}
+                        {needsOptions && (
+                          <div className="flex items-center justify-between gap-2 pl-1">
+                            <div className="text-xs text-amber-800 flex items-center gap-1 min-w-0" data-testid={`encomenda-item-options-${i}`}>
+                              {prod.is_pizza && <Pizza className="h-3 w-3 shrink-0" />}
+                              <span className="truncate">{desc || "Opções não escolhidas"}</span>
                             </div>
+                            <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={() => setPicking({ index: i, product: prod })} data-testid={`encomenda-item-edit-options-${i}`}>
+                              <SlidersHorizontal className="h-3 w-3 mr-1" /> Opções
+                            </Button>
                           </div>
                         )}
                         <Input placeholder="Observação deste item" value={it.notes} onChange={(e) => updItem(i, { notes: e.target.value })} />
@@ -234,7 +253,7 @@ export default function Encomendas() {
                 </div>
               </div>
 
-              <div className="col-span-2"><Label>Observações gerais</Label>
+              <div className="sm:col-span-2"><Label>Observações gerais</Label>
                 <Textarea rows={2} value={newForm.notes} onChange={(e) => setNewForm({ ...newForm, notes: e.target.value })} /></div>
             </div>
             <DialogFooter>
@@ -243,6 +262,22 @@ export default function Encomendas() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+      )}
+
+      {picking && (
+        <ProductDialog
+          product={picking.product}
+          onClose={() => setPicking(null)}
+          onConfirm={(payload) => {
+            updItem(picking.index, {
+              quantity: payload.quantity,
+              variations_data: payload.variations_data,
+              pizza_halves: payload.pizza_halves,
+              notes: payload.notes || "",
+            });
+            setPicking(null);
+          }}
+        />
       )}
     </div>
   );

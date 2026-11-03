@@ -23,6 +23,7 @@ export default function Estoque() {
     setItems(r.data);
     const m = await apiClient.get("/estoque/movimentos");
     setMovs(m.data);
+    window.dispatchEvent(new Event("estoque-changed"));
   };
 
   useEffect(() => { load(); }, []);
