@@ -910,8 +910,8 @@ async def update_order(oid: str, u: OrderUpdate, _: dict = Depends(require_any))
     order = await db.orders.find_one({"id": oid})
     if not order:
         raise HTTPException(404, "Comanda não encontrada")
-    if order["status"] == "fechada":
-        raise HTTPException(400, "Comanda já fechada")
+    if order["status"] not in ORDER_EDITABLE_STATUSES:
+        raise HTTPException(400, "Comanda já fechada ou cancelada")
     upd = {}
     for k, v in u.model_dump().items():
         if v is not None:
@@ -933,8 +933,8 @@ async def add_item(oid: str, it: OrderItemIn, _: dict = Depends(require_any)):
     order = await db.orders.find_one({"id": oid})
     if not order:
         raise HTTPException(404, "Comanda não encontrada")
-    if order["status"] == "fechada":
-        raise HTTPException(400, "Comanda já fechada")
+    if order["status"] not in ORDER_EDITABLE_STATUSES:
+        raise HTTPException(400, "Comanda já fechada ou cancelada")
     item = await _build_item(it)
     order.setdefault("items", []).append(item.model_dump())
     _recalc_totals(order)
@@ -949,8 +949,8 @@ async def remove_item(oid: str, item_id: str, _: dict = Depends(require_any)):
     order = await db.orders.find_one({"id": oid})
     if not order:
         raise HTTPException(404, "Comanda não encontrada")
-    if order["status"] == "fechada":
-        raise HTTPException(400, "Comanda já fechada")
+    if order["status"] not in ORDER_EDITABLE_STATUSES:
+        raise HTTPException(400, "Comanda já fechada ou cancelada")
     order["items"] = [i for i in order.get("items", []) if i["id"] != item_id]
     _recalc_totals(order)
     await db.orders.update_one({"id": oid}, {"$set": {
@@ -964,8 +964,8 @@ async def checkout_order(oid: str, req: CheckoutRequest, user: dict = Depends(re
     order = await db.orders.find_one({"id": oid})
     if not order:
         raise HTTPException(404, "Comanda não encontrada")
-    if order["status"] == "fechada":
-        raise HTTPException(400, "Comanda já fechada")
+    if order["status"] not in ORDER_EDITABLE_STATUSES:
+        raise HTTPException(400, "Comanda já fechada ou cancelada")
     if not order.get("items"):
         raise HTTPException(400, "Adicione itens antes de fechar")
 
@@ -1104,7 +1104,12 @@ async def create_encomenda(e: EncomendaIn, user: dict = Depends(require_any)):
 
 @api.patch("/encomendas/{eid}")
 async def update_encomenda(eid: str, body: EncomendaUpdate, _: dict = Depends(require_any)):
+    enc = await db.encomendas.find_one({"id": eid}, {"_id": 0})
+    if not enc:
+        raise HTTPException(404, "Encomenda não encontrada")
     upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "deposit" in upd and upd["deposit"] > enc.get("total", 0) + 0.009:
+        raise HTTPException(400, "Sinal maior que o total da encomenda")
     if "status" in upd and upd["status"] not in ENCOMENDA_STATUSES:
         raise HTTPException(400, "Status inválido")
     if not upd:
@@ -1115,7 +1120,9 @@ async def update_encomenda(eid: str, body: EncomendaUpdate, _: dict = Depends(re
 
 @api.delete("/encomendas/{eid}")
 async def delete_encomenda(eid: str, _: dict = Depends(require_any)):
-    await db.encomendas.delete_one({"id": eid})
+    res = await db.encomendas.delete_one({"id": eid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Encomenda não encontrada")
     return {"ok": True}
 
 

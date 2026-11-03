@@ -93,14 +93,22 @@ export default function Encomendas() {
   };
 
   const updStatus = async (e, status) => {
-    await apiClient.patch(`/encomendas/${e.id}`, { status });
-    load();
+    try {
+      await apiClient.patch(`/encomendas/${e.id}`, { status });
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Erro ao atualizar");
+    }
   };
 
   const remove = async (e) => {
     if (!confirm("Remover encomenda?")) return;
-    await apiClient.delete(`/encomendas/${e.id}`);
-    load();
+    try {
+      await apiClient.delete(`/encomendas/${e.id}`);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Erro ao remover");
+    }
   };
 
   const today = localToday();
@@ -167,7 +175,7 @@ export default function Encomendas() {
                       </div>
                       <div className="flex gap-1">
                         <Select value={e.status} onValueChange={(v) => updStatus(e, v)}>
-                          <SelectTrigger className="h-8 w-32"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="h-8 w-32" data-testid={`encomenda-status-${e.id}`}><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="pendente">Pendente</SelectItem>
                             <SelectItem value="em_producao">Em produção</SelectItem>
@@ -176,7 +184,7 @@ export default function Encomendas() {
                             <SelectItem value="cancelada">Cancelada</SelectItem>
                           </SelectContent>
                         </Select>
-                        <Button size="icon" variant="ghost" onClick={() => remove(e)}>
+                        <Button size="icon" variant="ghost" onClick={() => remove(e)} data-testid={`encomenda-delete-${e.id}`}>
                           <Trash2 className="h-3.5 w-3.5 text-red-500" />
                         </Button>
                       </div>
