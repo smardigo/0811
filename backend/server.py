@@ -1,0 +1,1216 @@
+"""Sistema POS Padaria & Lanchonete - FastAPI Backend."""
+import asyncio
+import logging
+import os
+import uuid
+from contextlib import suppress
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Annotated, Any, List, Optional
+
+import bcrypt
+import jwt
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi.security import OAuth2PasswordBearer
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pymongo import ASCENDING, DESCENDING, IndexModel
+from starlette.middleware.cors import CORSMiddleware
+
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+MONGO_URL = os.environ["MONGO_URL"]
+DB_NAME = os.environ["DB_NAME"]
+JWT_SECRET = os.environ.get("JWT_SECRET", "padaria-tradicao-secret-2026")
+JWT_ALGO = "HS256"
+JWT_EXPIRE_HOURS = 12
+
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+app = FastAPI(title="Padaria & Lanchonete POS")
+api = APIRouter(prefix="/api")
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
+
+
+# ============================================================
+# Utilities
+# ============================================================
+def new_id() -> str:
+    return str(uuid.uuid4())
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+
+
+def check_password(pw: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(pw.encode(), hashed.encode())
+    except Exception:
+        return False
+
+
+def make_token(user_id: str, role: str) -> str:
+    payload = {
+        "sub": user_id,
+        "role": role,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+# ============================================================
+# Models
+# ============================================================
+class LoginRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    pin: Optional[str] = None
+
+
+class UserCreate(BaseModel):
+    username: str
+    name: str
+    role: str  # 'gerente' | 'operador'
+    password: str
+    pin: Optional[str] = None
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    password: Optional[str] = None
+    pin: Optional[str] = None
+
+
+class UserOut(BaseModel):
+    id: str
+    username: str
+    name: str
+    role: str
+    has_pin: bool
+    email: Optional[str] = None
+
+
+class Category(BaseModel):
+    id: str = Field(default_factory=new_id)
+    name: str
+    icon: Optional[str] = None
+
+
+class VariationOption(BaseModel):
+    label: str
+    price_delta: float = 0.0
+
+
+class ProductVariation(BaseModel):
+    name: str  # ex: "Tamanho", "Ingredientes"
+    type: str  # 'single' | 'multiple'
+    required: bool = False
+    options: List[VariationOption] = []
+
+
+class Product(BaseModel):
+    id: str = Field(default_factory=new_id)
+    name: str
+    category_id: str
+    base_price: float
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    is_pizza: bool = False
+    pizza_flavors: List[str] = []  # names of available flavors if is_pizza
+    pizza_pricing: str = "maior"  # 'maior' or 'media'
+    variations: List[ProductVariation] = []
+    active: bool = True
+    tracks_stock: bool = False
+    stock_item_id: Optional[str] = None  # link to estoque item
+    stock_usage: float = 1.0  # units consumed per sale
+
+
+class ProductIn(BaseModel):
+    name: str
+    category_id: str
+    base_price: float
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    is_pizza: bool = False
+    pizza_flavors: List[str] = []
+    pizza_pricing: str = "maior"
+    variations: List[ProductVariation] = []
+    active: bool = True
+    tracks_stock: bool = False
+    stock_item_id: Optional[str] = None
+    stock_usage: float = 1.0
+
+
+class Customer(BaseModel):
+    id: str = Field(default_factory=new_id)
+    name: str
+    phone: Optional[str] = None
+    cpf: Optional[str] = None
+    credit_limit: float = 0.0
+    debt_balance: float = 0.0
+    notes: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class CustomerIn(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    cpf: Optional[str] = None
+    credit_limit: float = 0.0
+    notes: Optional[str] = None
+
+
+class OrderItem(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
+    product_name: str
+    quantity: float = 1
+    unit_price: float
+    total_price: float
+    variations_text: Optional[str] = None  # human readable
+    variations_data: dict = {}
+    pizza_halves: List[str] = []  # flavor names
+    notes: Optional[str] = None
+
+
+class OrderItemIn(BaseModel):
+    product_id: str
+    quantity: float = 1
+    variations_data: dict = {}
+    pizza_halves: List[str] = []
+    notes: Optional[str] = None
+
+
+class Payment(BaseModel):
+    method: str  # 'dinheiro' | 'cartao' | 'pix' | 'fiado'
+    amount: float
+    change: float = 0.0
+    customer_id: Optional[str] = None  # required for fiado
+
+
+class Order(BaseModel):
+    id: str = Field(default_factory=new_id)
+    number: int
+    table_label: str  # Mesa 5 / Balcão / Entrega
+    status: str = "aberta"  # aberta | em_producao | pronta | aguardando_pagamento | fechada | cancelada
+    items: List[OrderItem] = []
+    subtotal: float = 0.0
+    discount: float = 0.0
+    total: float = 0.0
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    payments: List[Payment] = []
+    operator_id: str
+    operator_name: str
+    notes: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    closed_at: Optional[str] = None
+
+
+class OrderCreate(BaseModel):
+    table_label: str
+    customer_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class OrderUpdate(BaseModel):
+    status: Optional[str] = None
+    discount: Optional[float] = None
+    notes: Optional[str] = None
+    table_label: Optional[str] = None
+    customer_id: Optional[str] = None
+
+
+class CheckoutRequest(BaseModel):
+    payments: List[Payment]
+    discount: float = 0.0
+
+
+class Encomenda(BaseModel):
+    id: str = Field(default_factory=new_id)
+    customer_name: str
+    customer_phone: Optional[str] = None
+    customer_id: Optional[str] = None
+    delivery_date: str  # ISO date
+    delivery_time: Optional[str] = None
+    items: List[OrderItem] = []
+    total: float = 0.0
+    deposit: float = 0.0
+    status: str = "pendente"  # pendente | em_producao | pronta | entregue | cancelada
+    notes: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class EncomendaIn(BaseModel):
+    customer_name: str
+    customer_phone: Optional[str] = None
+    customer_id: Optional[str] = None
+    delivery_date: str
+    delivery_time: Optional[str] = None
+    items: List[OrderItemIn] = []
+    deposit: float = 0.0
+    notes: Optional[str] = None
+
+
+class EstoqueItem(BaseModel):
+    id: str = Field(default_factory=new_id)
+    name: str
+    unit: str = "un"  # un | kg | g | l | ml
+    quantity: float = 0.0
+    min_quantity: float = 0.0
+    cost_price: float = 0.0
+    supplier: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class EstoqueItemIn(BaseModel):
+    name: str
+    unit: str = "un"
+    quantity: float = 0.0
+    min_quantity: float = 0.0
+    cost_price: float = 0.0
+    supplier: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class EstoqueMovimento(BaseModel):
+    id: str = Field(default_factory=new_id)
+    item_id: str
+    item_name: str
+    type: str  # 'entrada' | 'saida' | 'ajuste'
+    quantity: float
+    reason: Optional[str] = None
+    user_name: str
+    date: str = Field(default_factory=now_iso)
+
+
+class EstoqueMovimentoIn(BaseModel):
+    item_id: str
+    type: str
+    quantity: float
+    reason: Optional[str] = None
+
+
+class FiadoPayment(BaseModel):
+    customer_id: str
+    amount: float
+    method: str = "dinheiro"  # dinheiro | cartao | pix
+    note: Optional[str] = None
+
+
+# ============================================================
+# Auth deps
+# ============================================================
+async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> dict:
+    if not token:
+        raise HTTPException(status_code=401, detail="Não autenticado")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0, "pin_hash": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+    return user
+
+
+def require_role(*roles):
+    async def dep(user: dict = Depends(get_current_user)):
+        if user["role"] not in roles:
+            raise HTTPException(status_code=403, detail="Acesso restrito")
+        return user
+    return dep
+
+
+require_gerente = require_role("gerente")
+require_any = require_role("gerente", "operador")
+
+
+# ============================================================
+# Indexes & Seed
+# ============================================================
+INDEXES = {
+    "users": [IndexModel([("id", ASCENDING)], unique=True, name="id"),
+              IndexModel([("username", ASCENDING)], unique=True, name="username")],
+    "products": [IndexModel([("id", ASCENDING)], unique=True, name="id")],
+    "categories": [IndexModel([("id", ASCENDING)], unique=True, name="id")],
+    "customers": [IndexModel([("id", ASCENDING)], unique=True, name="id")],
+    "orders": [IndexModel([("id", ASCENDING)], unique=True, name="id"),
+               IndexModel([("number", DESCENDING)], name="number"),
+               IndexModel([("status", ASCENDING)], name="status"),
+               IndexModel([("created_at", DESCENDING)], name="created_at")],
+    "encomendas": [IndexModel([("id", ASCENDING)], unique=True, name="id"),
+                   IndexModel([("delivery_date", ASCENDING)], name="delivery_date")],
+    "estoque_items": [IndexModel([("id", ASCENDING)], unique=True, name="id")],
+    "estoque_mov": [IndexModel([("id", ASCENDING)], unique=True, name="id"),
+                    IndexModel([("date", DESCENDING)], name="date")],
+    "fiado_mov": [IndexModel([("customer_id", ASCENDING)], name="customer"),
+                  IndexModel([("date", DESCENDING)], name="date")],
+}
+
+
+async def ensure_indexes():
+    for col, idxs in INDEXES.items():
+        for idx in idxs:
+            try:
+                await db[col].create_indexes([idx])
+            except Exception as e:
+                logger.warning("index %s.%s: %s", col, idx.document["name"], e)
+
+
+async def seed_initial_data():
+    """Seed sample data if DB is empty."""
+    if await db.users.count_documents({}) > 0:
+        return
+
+    logger.info("Seeding initial data...")
+
+    # Users
+    admin = {
+        "id": new_id(),
+        "username": "admin",
+        "name": "Gerente Principal",
+        "email": "smardigo@gmail.com",
+        "role": "gerente",
+        "password_hash": hash_password("admin123"),
+        "pin_hash": hash_password("1234"),
+        "created_at": now_iso(),
+    }
+    caixa = {
+        "id": new_id(),
+        "username": "caixa1",
+        "name": "Maria (Operadora)",
+        "role": "operador",
+        "password_hash": hash_password("caixa123"),
+        "pin_hash": hash_password("5678"),
+        "created_at": now_iso(),
+    }
+    await db.users.insert_many([admin, caixa])
+
+    # Categories
+    cats_data = [
+        ("Padaria", "croissant"),
+        ("Salgados", "drumstick"),
+        ("Lanches", "sandwich"),
+        ("Pizzas", "pizza"),
+        ("Bebidas", "coffee"),
+        ("Doces", "cake"),
+    ]
+    cats = [{"id": new_id(), "name": n, "icon": i} for n, i in cats_data]
+    await db.categories.insert_many(cats)
+    cat_id = {c["name"]: c["id"] for c in cats}
+
+    # Estoque
+    estoque = [
+        {"id": new_id(), "name": "Farinha de trigo", "unit": "kg", "quantity": 25.0, "min_quantity": 10.0, "cost_price": 4.5, "supplier": "Moinho Central"},
+        {"id": new_id(), "name": "Queijo mussarela", "unit": "kg", "quantity": 8.0, "min_quantity": 3.0, "cost_price": 38.0, "supplier": "Laticínios Vale"},
+        {"id": new_id(), "name": "Presunto cozido", "unit": "kg", "quantity": 4.0, "min_quantity": 2.0, "cost_price": 28.0, "supplier": "Frigorífico"},
+        {"id": new_id(), "name": "Café em grãos", "unit": "kg", "quantity": 5.0, "min_quantity": 2.0, "cost_price": 45.0, "supplier": "Café do Vale"},
+        {"id": new_id(), "name": "Açúcar refinado", "unit": "kg", "quantity": 15.0, "min_quantity": 5.0, "cost_price": 3.8, "supplier": "União"},
+        {"id": new_id(), "name": "Leite integral", "unit": "l", "quantity": 20.0, "min_quantity": 10.0, "cost_price": 5.2, "supplier": "Laticínios Vale"},
+        {"id": new_id(), "name": "Refrigerante lata", "unit": "un", "quantity": 48.0, "min_quantity": 24.0, "cost_price": 3.5, "supplier": "Distribuidora"},
+        {"id": new_id(), "name": "Calabresa", "unit": "kg", "quantity": 1.5, "min_quantity": 2.0, "cost_price": 32.0, "supplier": "Frigorífico"},
+        {"id": new_id(), "name": "Molho de tomate", "unit": "kg", "quantity": 6.0, "min_quantity": 3.0, "cost_price": 8.0, "supplier": "Conservas Boa"},
+    ]
+    await db.estoque_items.insert_many(estoque)
+
+    # Products
+    produtos = [
+        {"name": "Pão Francês", "category_id": cat_id["Padaria"], "base_price": 0.75, "description": "Unidade fresquinha",
+         "image_url": "https://images.unsplash.com/photo-1549931319-a545dcf3bc73?w=400"},
+        {"name": "Pão de Queijo", "category_id": cat_id["Padaria"], "base_price": 3.50, "description": "Mineiro tradicional",
+         "image_url": "https://images.unsplash.com/photo-1623334044303-241021148842?w=400"},
+        {"name": "Croissant", "category_id": cat_id["Padaria"], "base_price": 7.00, "description": "Manteiga francesa",
+         "image_url": "https://images.unsplash.com/photo-1530610476181-d83430b64dcd?w=400"},
+        {"name": "Bolo de Fubá", "category_id": cat_id["Doces"], "base_price": 5.50, "description": "Fatia caseira",
+         "variations": [{"name": "Tamanho", "type": "single", "required": True,
+                        "options": [{"label": "Fatia", "price_delta": 0}, {"label": "Bolo inteiro", "price_delta": 25.0}]}]},
+        {"name": "Brigadeiro Gourmet", "category_id": cat_id["Doces"], "base_price": 4.00, "description": "Unidade"},
+        {"name": "Coxinha", "category_id": cat_id["Salgados"], "base_price": 6.50, "description": "Frango cremoso",
+         "image_url": "https://images.unsplash.com/photo-1626200419199-391ae4be7a41?w=400"},
+        {"name": "Pastel", "category_id": cat_id["Salgados"], "base_price": 8.00, "description": "Recheios variados",
+         "variations": [{"name": "Recheio", "type": "single", "required": True,
+                        "options": [{"label": "Carne", "price_delta": 0}, {"label": "Queijo", "price_delta": 0},
+                                    {"label": "Palmito", "price_delta": 1.0}, {"label": "Frango c/ catupiry", "price_delta": 1.5}]}]},
+        {"name": "Empada", "category_id": cat_id["Salgados"], "base_price": 7.00},
+        {"name": "Café Expresso", "category_id": cat_id["Bebidas"], "base_price": 4.00, "description": "Grãos selecionados"},
+        {"name": "Pingado", "category_id": cat_id["Bebidas"], "base_price": 5.50, "description": "Café com leite"},
+        {"name": "Suco Natural", "category_id": cat_id["Bebidas"], "base_price": 9.00,
+         "variations": [{"name": "Sabor", "type": "single", "required": True,
+                        "options": [{"label": "Laranja", "price_delta": 0}, {"label": "Abacaxi", "price_delta": 0},
+                                    {"label": "Maracujá", "price_delta": 1.0}, {"label": "Morango", "price_delta": 2.0}]},
+                       {"name": "Tamanho", "type": "single", "required": True,
+                        "options": [{"label": "300ml", "price_delta": 0}, {"label": "500ml", "price_delta": 4.0}]}]},
+        {"name": "Refrigerante Lata", "category_id": cat_id["Bebidas"], "base_price": 6.00},
+        {"name": "X-Burger", "category_id": cat_id["Lanches"], "base_price": 18.00, "description": "Pão, carne, queijo, salada",
+         "image_url": "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400",
+         "variations": [{"name": "Extras", "type": "multiple", "required": False,
+                        "options": [{"label": "Bacon", "price_delta": 4.0}, {"label": "Ovo", "price_delta": 2.5},
+                                    {"label": "Catupiry", "price_delta": 3.0}, {"label": "Cheddar", "price_delta": 3.0}]}]},
+        {"name": "Misto Quente", "category_id": cat_id["Lanches"], "base_price": 12.00, "description": "Pão francês com presunto e queijo"},
+        {"name": "Pizza Grande", "category_id": cat_id["Pizzas"], "base_price": 55.00, "description": "8 fatias - personalize sabores",
+         "image_url": "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=400",
+         "is_pizza": True, "pizza_pricing": "maior",
+         "pizza_flavors": ["Calabresa", "Mussarela", "Quatro Queijos", "Margherita", "Portuguesa",
+                           "Frango c/ Catupiry", "Pepperoni", "Atum", "Vegetariana", "Chocolate"]},
+        {"name": "Pizza Média", "category_id": cat_id["Pizzas"], "base_price": 42.00, "description": "6 fatias - personalize sabores",
+         "is_pizza": True, "pizza_pricing": "maior",
+         "pizza_flavors": ["Calabresa", "Mussarela", "Quatro Queijos", "Margherita", "Portuguesa",
+                           "Frango c/ Catupiry", "Pepperoni", "Vegetariana"]},
+    ]
+    for p in produtos:
+        p["id"] = new_id()
+        p.setdefault("variations", [])
+        p.setdefault("is_pizza", False)
+        p.setdefault("pizza_flavors", [])
+        p.setdefault("pizza_pricing", "maior")
+        p.setdefault("active", True)
+        p.setdefault("tracks_stock", False)
+    await db.products.insert_many(produtos)
+
+    # Customers
+    clientes = [
+        {"id": new_id(), "name": "João da Silva", "phone": "(11) 98765-4321", "cpf": "111.222.333-44",
+         "credit_limit": 200.0, "debt_balance": 45.50, "created_at": now_iso()},
+        {"id": new_id(), "name": "Maria Oliveira", "phone": "(11) 91234-5678", "cpf": "222.333.444-55",
+         "credit_limit": 150.0, "debt_balance": 0.0, "created_at": now_iso()},
+        {"id": new_id(), "name": "Carlos Souza", "phone": "(11) 99876-5432",
+         "credit_limit": 300.0, "debt_balance": 112.00, "created_at": now_iso()},
+        {"id": new_id(), "name": "Ana Paula", "phone": "(11) 98111-2233",
+         "credit_limit": 100.0, "debt_balance": 28.00, "created_at": now_iso()},
+    ]
+    await db.customers.insert_many(clientes)
+
+    # Counter
+    await db.counters.insert_one({"_id": "order_number", "seq": 100})
+
+    logger.info("Seed concluído.")
+
+
+# ============================================================
+# Auth routes
+# ============================================================
+@api.post("/auth/login")
+async def login(req: LoginRequest):
+    user = None
+    if req.pin:
+        # Match any user by trying pin against each (small user base)
+        users = await db.users.find({}).to_list(100)
+        for u in users:
+            if u.get("pin_hash") and check_password(req.pin, u["pin_hash"]):
+                user = u
+                break
+        if not user:
+            raise HTTPException(status_code=401, detail="PIN inválido")
+    elif req.username and req.password:
+        user = await db.users.find_one({"username": req.username})
+        if not user or not check_password(req.password, user["password_hash"]):
+            raise HTTPException(status_code=401, detail="Usuário ou senha inválidos")
+    else:
+        raise HTTPException(status_code=400, detail="Forneça usuário/senha ou PIN")
+
+    token = make_token(user["id"], user["role"])
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "name": user["name"],
+            "role": user["role"],
+            "has_pin": bool(user.get("pin_hash")),
+        },
+    }
+
+
+@api.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "name": user["name"],
+        "role": user["role"],
+        "has_pin": bool(user.get("pin_hash")),
+    }
+
+
+# ============================================================
+# Users (gerente)
+# ============================================================
+@api.get("/users", response_model=List[UserOut])
+async def list_users(_: dict = Depends(require_gerente)):
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(500)
+    return [{"id": u["id"], "username": u["username"], "name": u["name"], "role": u["role"],
+             "has_pin": bool(u.get("pin_hash")), "email": u.get("email")} for u in users]
+
+
+@api.post("/users", response_model=UserOut)
+async def create_user(u: UserCreate, _: dict = Depends(require_gerente)):
+    if u.role not in ("gerente", "operador"):
+        raise HTTPException(400, "Perfil inválido")
+    if await db.users.find_one({"username": u.username}):
+        raise HTTPException(400, "Usuário já existe")
+    doc = {
+        "id": new_id(),
+        "username": u.username,
+        "name": u.name,
+        "role": u.role,
+        "password_hash": hash_password(u.password),
+        "pin_hash": hash_password(u.pin) if u.pin else None,
+        "created_at": now_iso(),
+    }
+    await db.users.insert_one(doc)
+    return {"id": doc["id"], "username": doc["username"], "name": doc["name"], "role": doc["role"],
+            "has_pin": bool(doc.get("pin_hash"))}
+
+
+@api.patch("/users/{uid}", response_model=UserOut)
+async def update_user(uid: str, u: UserUpdate, _: dict = Depends(require_gerente)):
+    upd = {}
+    if u.name is not None:
+        upd["name"] = u.name
+    if u.role is not None:
+        if u.role not in ("gerente", "operador"):
+            raise HTTPException(400, "Perfil inválido")
+        upd["role"] = u.role
+    if u.password:
+        upd["password_hash"] = hash_password(u.password)
+    if u.pin is not None:
+        upd["pin_hash"] = hash_password(u.pin) if u.pin else None
+    if upd:
+        await db.users.update_one({"id": uid}, {"$set": upd})
+    doc = await db.users.find_one({"id": uid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Não encontrado")
+    return {"id": doc["id"], "username": doc["username"], "name": doc["name"], "role": doc["role"],
+            "has_pin": bool(doc.get("pin_hash"))}
+
+
+@api.delete("/users/{uid}")
+async def delete_user(uid: str, me: dict = Depends(require_gerente)):
+    if uid == me["id"]:
+        raise HTTPException(400, "Não pode excluir a si mesmo")
+    gerentes = await db.users.count_documents({"role": "gerente"})
+    target = await db.users.find_one({"id": uid})
+    if target and target["role"] == "gerente" and gerentes <= 1:
+        raise HTTPException(400, "Mantenha ao menos um gerente")
+    await db.users.delete_one({"id": uid})
+    return {"ok": True}
+
+
+# ============================================================
+# Categories
+# ============================================================
+@api.get("/categories")
+async def list_categories(_: dict = Depends(require_any)):
+    return await db.categories.find({}, {"_id": 0}).to_list(100)
+
+
+@api.post("/categories")
+async def create_category(c: Category, _: dict = Depends(require_gerente)):
+    doc = c.model_dump()
+    await db.categories.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.delete("/categories/{cid}")
+async def delete_category(cid: str, _: dict = Depends(require_gerente)):
+    if await db.products.count_documents({"category_id": cid}) > 0:
+        raise HTTPException(400, "Categoria em uso por produtos")
+    await db.categories.delete_one({"id": cid})
+    return {"ok": True}
+
+
+# ============================================================
+# Products
+# ============================================================
+@api.get("/products")
+async def list_products(category_id: Optional[str] = None, _: dict = Depends(require_any)):
+    q = {"active": True}
+    if category_id:
+        q["category_id"] = category_id
+    return await db.products.find(q, {"_id": 0}).to_list(1000)
+
+
+@api.get("/products/all")
+async def list_all_products(_: dict = Depends(require_gerente)):
+    return await db.products.find({}, {"_id": 0}).to_list(1000)
+
+
+@api.post("/products")
+async def create_product(p: ProductIn, _: dict = Depends(require_gerente)):
+    doc = Product(**p.model_dump()).model_dump()
+    await db.products.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/products/{pid}")
+async def update_product(pid: str, p: ProductIn, _: dict = Depends(require_gerente)):
+    upd = p.model_dump()
+    await db.products.update_one({"id": pid}, {"$set": upd})
+    doc = await db.products.find_one({"id": pid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Produto não encontrado")
+    return doc
+
+
+@api.delete("/products/{pid}")
+async def delete_product(pid: str, _: dict = Depends(require_gerente)):
+    await db.products.delete_one({"id": pid})
+    return {"ok": True}
+
+
+# ============================================================
+# Customers
+# ============================================================
+@api.get("/customers")
+async def list_customers(q: Optional[str] = None, _: dict = Depends(require_any)):
+    query = {}
+    if q:
+        query = {"$or": [{"name": {"$regex": q, "$options": "i"}},
+                         {"phone": {"$regex": q, "$options": "i"}},
+                         {"cpf": {"$regex": q, "$options": "i"}}]}
+    return await db.customers.find(query, {"_id": 0}).sort("name", 1).to_list(500)
+
+
+@api.post("/customers")
+async def create_customer(c: CustomerIn, _: dict = Depends(require_any)):
+    doc = Customer(**c.model_dump()).model_dump()
+    await db.customers.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/customers/{cid}")
+async def update_customer(cid: str, c: CustomerIn, _: dict = Depends(require_any)):
+    await db.customers.update_one({"id": cid}, {"$set": c.model_dump()})
+    doc = await db.customers.find_one({"id": cid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Cliente não encontrado")
+    return doc
+
+
+@api.delete("/customers/{cid}")
+async def delete_customer(cid: str, _: dict = Depends(require_gerente)):
+    c = await db.customers.find_one({"id": cid})
+    if c and c.get("debt_balance", 0) > 0:
+        raise HTTPException(400, "Cliente possui saldo devedor")
+    await db.customers.delete_one({"id": cid})
+    return {"ok": True}
+
+
+@api.get("/customers/{cid}/historico")
+async def customer_history(cid: str, _: dict = Depends(require_any)):
+    movs = await db.fiado_mov.find({"customer_id": cid}, {"_id": 0}).sort("date", -1).to_list(500)
+    return movs
+
+
+@api.post("/customers/{cid}/pagamento")
+async def pay_debt(cid: str, p: FiadoPayment, user: dict = Depends(require_any)):
+    customer = await db.customers.find_one({"id": cid})
+    if not customer:
+        raise HTTPException(404, "Cliente não encontrado")
+    new_balance = max(0.0, customer.get("debt_balance", 0) - p.amount)
+    await db.customers.update_one({"id": cid}, {"$set": {"debt_balance": new_balance}})
+    mov = {
+        "id": new_id(),
+        "customer_id": cid,
+        "customer_name": customer["name"],
+        "type": "pagamento",
+        "amount": p.amount,
+        "method": p.method,
+        "note": p.note,
+        "user_name": user["name"],
+        "date": now_iso(),
+    }
+    await db.fiado_mov.insert_one(mov)
+    return {"ok": True, "debt_balance": new_balance}
+
+
+# ============================================================
+# Orders / Comandas
+# ============================================================
+async def next_order_number() -> int:
+    doc = await db.counters.find_one_and_update(
+        {"_id": "order_number"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    return doc["seq"] if doc else 1
+
+
+def _format_variations(product: dict, variations_data: dict) -> tuple[float, str]:
+    """Return (price_delta, text)."""
+    delta = 0.0
+    parts = []
+    for v in product.get("variations", []):
+        name = v["name"]
+        sel = variations_data.get(name)
+        if not sel:
+            if v.get("required"):
+                raise HTTPException(400, f"Selecione {name}")
+            continue
+        if v["type"] == "single":
+            opt = next((o for o in v["options"] if o["label"] == sel), None)
+            if opt:
+                delta += opt["price_delta"]
+                parts.append(f"{name}: {sel}")
+        else:
+            labels = sel if isinstance(sel, list) else [sel]
+            for label in labels:
+                opt = next((o for o in v["options"] if o["label"] == label), None)
+                if opt:
+                    delta += opt["price_delta"]
+            if labels:
+                parts.append(f"{name}: {', '.join(labels)}")
+    return delta, " | ".join(parts) if parts else ""
+
+
+async def _build_item(it: OrderItemIn) -> OrderItem:
+    product = await db.products.find_one({"id": it.product_id}, {"_id": 0})
+    if not product:
+        raise HTTPException(404, "Produto não encontrado")
+
+    unit_price = float(product["base_price"])
+    text_parts = []
+
+    if product.get("is_pizza"):
+        halves = it.pizza_halves or []
+        if not halves:
+            raise HTTPException(400, "Selecione os sabores da pizza")
+        if len(halves) > 4:
+            raise HTTPException(400, "Máximo 4 sabores")
+        # pricing: base_price is the full price (maior sabor equal base)
+        text_parts.append(f"Sabores: {' / '.join(halves)}")
+    else:
+        delta, text = _format_variations(product, it.variations_data or {})
+        unit_price += delta
+        if text:
+            text_parts.append(text)
+
+    total = unit_price * it.quantity
+    return OrderItem(
+        product_id=product["id"],
+        product_name=product["name"],
+        quantity=it.quantity,
+        unit_price=unit_price,
+        total_price=total,
+        variations_text=" | ".join(text_parts) if text_parts else None,
+        variations_data=it.variations_data or {},
+        pizza_halves=it.pizza_halves or [],
+        notes=it.notes,
+    )
+
+
+def _recalc_totals(order: dict):
+    sub = sum(i["total_price"] for i in order.get("items", []))
+    order["subtotal"] = round(sub, 2)
+    order["total"] = round(max(0.0, sub - order.get("discount", 0.0)), 2)
+
+
+@api.get("/orders")
+async def list_orders(status: Optional[str] = None, user: dict = Depends(require_any)):
+    q = {}
+    if status:
+        if "," in status:
+            q["status"] = {"$in": status.split(",")}
+        else:
+            q["status"] = status
+    orders = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).limit(300).to_list(300)
+    return orders
+
+
+@api.get("/orders/{oid}")
+async def get_order(oid: str, _: dict = Depends(require_any)):
+    o = await db.orders.find_one({"id": oid}, {"_id": 0})
+    if not o:
+        raise HTTPException(404, "Comanda não encontrada")
+    return o
+
+
+@api.post("/orders")
+async def create_order(o: OrderCreate, user: dict = Depends(require_any)):
+    customer_name = None
+    if o.customer_id:
+        c = await db.customers.find_one({"id": o.customer_id})
+        if c:
+            customer_name = c["name"]
+    order = Order(
+        number=await next_order_number(),
+        table_label=o.table_label,
+        operator_id=user["id"],
+        operator_name=user["name"],
+        customer_id=o.customer_id,
+        customer_name=customer_name,
+        notes=o.notes,
+    ).model_dump()
+    await db.orders.insert_one(order)
+    return {k: v for k, v in order.items() if k != "_id"}
+
+
+@api.patch("/orders/{oid}")
+async def update_order(oid: str, u: OrderUpdate, _: dict = Depends(require_any)):
+    order = await db.orders.find_one({"id": oid})
+    if not order:
+        raise HTTPException(404, "Comanda não encontrada")
+    if order["status"] == "fechada":
+        raise HTTPException(400, "Comanda já fechada")
+    upd = {}
+    for k, v in u.model_dump().items():
+        if v is not None:
+            upd[k] = v
+    if "customer_id" in upd and upd["customer_id"]:
+        c = await db.customers.find_one({"id": upd["customer_id"]})
+        upd["customer_name"] = c["name"] if c else None
+    if upd:
+        order.update(upd)
+        _recalc_totals(order)
+        await db.orders.update_one({"id": oid}, {"$set": {**upd, "subtotal": order["subtotal"], "total": order["total"]}})
+    return await db.orders.find_one({"id": oid}, {"_id": 0})
+
+
+@api.post("/orders/{oid}/items")
+async def add_item(oid: str, it: OrderItemIn, _: dict = Depends(require_any)):
+    order = await db.orders.find_one({"id": oid})
+    if not order:
+        raise HTTPException(404, "Comanda não encontrada")
+    if order["status"] == "fechada":
+        raise HTTPException(400, "Comanda já fechada")
+    item = await _build_item(it)
+    order.setdefault("items", []).append(item.model_dump())
+    _recalc_totals(order)
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "items": order["items"], "subtotal": order["subtotal"], "total": order["total"],
+    }})
+    return await db.orders.find_one({"id": oid}, {"_id": 0})
+
+
+@api.delete("/orders/{oid}/items/{item_id}")
+async def remove_item(oid: str, item_id: str, _: dict = Depends(require_any)):
+    order = await db.orders.find_one({"id": oid})
+    if not order:
+        raise HTTPException(404, "Comanda não encontrada")
+    if order["status"] == "fechada":
+        raise HTTPException(400, "Comanda já fechada")
+    order["items"] = [i for i in order.get("items", []) if i["id"] != item_id]
+    _recalc_totals(order)
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "items": order["items"], "subtotal": order["subtotal"], "total": order["total"],
+    }})
+    return await db.orders.find_one({"id": oid}, {"_id": 0})
+
+
+@api.post("/orders/{oid}/checkout")
+async def checkout_order(oid: str, req: CheckoutRequest, user: dict = Depends(require_any)):
+    order = await db.orders.find_one({"id": oid})
+    if not order:
+        raise HTTPException(404, "Comanda não encontrada")
+    if order["status"] == "fechada":
+        raise HTTPException(400, "Comanda já fechada")
+    if not order.get("items"):
+        raise HTTPException(400, "Adicione itens antes de fechar")
+
+    order["discount"] = req.discount or 0.0
+    _recalc_totals(order)
+
+    paid = sum(p.amount for p in req.payments)
+    if paid + 0.009 < order["total"]:
+        raise HTTPException(400, f"Pagamento insuficiente: R$ {paid:.2f} < R$ {order['total']:.2f}")
+
+    # Handle fiado: must have customer, update debt
+    fiado_total = 0.0
+    for p in req.payments:
+        if p.method == "fiado":
+            cid = p.customer_id or order.get("customer_id")
+            if not cid:
+                raise HTTPException(400, "Fiado requer cliente")
+            customer = await db.customers.find_one({"id": cid})
+            if not customer:
+                raise HTTPException(404, "Cliente de fiado não encontrado")
+            new_balance = customer.get("debt_balance", 0) + p.amount
+            if customer.get("credit_limit", 0) > 0 and new_balance > customer["credit_limit"]:
+                raise HTTPException(400, f"Limite de crédito excedido para {customer['name']}")
+            await db.customers.update_one({"id": cid}, {"$set": {"debt_balance": new_balance}})
+            await db.fiado_mov.insert_one({
+                "id": new_id(),
+                "customer_id": cid,
+                "customer_name": customer["name"],
+                "type": "venda",
+                "amount": p.amount,
+                "order_id": oid,
+                "order_number": order["number"],
+                "user_name": user["name"],
+                "date": now_iso(),
+            })
+            fiado_total += p.amount
+            p.customer_id = cid
+
+    # Compute change (only on dinheiro)
+    change = max(0.0, paid - order["total"])
+    payments_doc = [p.model_dump() for p in req.payments]
+    # assign change to last dinheiro payment if present
+    for p in reversed(payments_doc):
+        if p["method"] == "dinheiro":
+            p["change"] = round(change, 2)
+            break
+
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "status": "fechada",
+        "payments": payments_doc,
+        "discount": order["discount"],
+        "total": order["total"],
+        "subtotal": order["subtotal"],
+        "closed_at": now_iso(),
+    }})
+
+    # Decrement stock for products linked
+    for it in order.get("items", []):
+        prod = await db.products.find_one({"id": it["product_id"]})
+        if prod and prod.get("tracks_stock") and prod.get("stock_item_id"):
+            qty = it["quantity"] * prod.get("stock_usage", 1.0)
+            await db.estoque_items.update_one(
+                {"id": prod["stock_item_id"]},
+                {"$inc": {"quantity": -qty}}
+            )
+            await db.estoque_mov.insert_one({
+                "id": new_id(),
+                "item_id": prod["stock_item_id"],
+                "item_name": prod.get("name", ""),
+                "type": "saida",
+                "quantity": qty,
+                "reason": f"Venda comanda #{order['number']}",
+                "user_name": user["name"],
+                "date": now_iso(),
+            })
+
+    return await db.orders.find_one({"id": oid}, {"_id": 0})
+
+
+@api.delete("/orders/{oid}")
+async def cancel_order(oid: str, _: dict = Depends(require_gerente)):
+    await db.orders.update_one({"id": oid}, {"$set": {"status": "cancelada", "closed_at": now_iso()}})
+    return {"ok": True}
+
+
+# ============================================================
+# Encomendas
+# ============================================================
+@api.get("/encomendas")
+async def list_encomendas(_: dict = Depends(require_any)):
+    return await db.encomendas.find({}, {"_id": 0}).sort("delivery_date", 1).to_list(500)
+
+
+@api.post("/encomendas")
+async def create_encomenda(e: EncomendaIn, user: dict = Depends(require_any)):
+    items = []
+    total = 0.0
+    for it in e.items:
+        built = await _build_item(it)
+        items.append(built.model_dump())
+        total += built.total_price
+    enc = Encomenda(
+        customer_name=e.customer_name,
+        customer_phone=e.customer_phone,
+        customer_id=e.customer_id,
+        delivery_date=e.delivery_date,
+        delivery_time=e.delivery_time,
+        items=[OrderItem(**i) for i in items],
+        total=round(total, 2),
+        deposit=e.deposit,
+        notes=e.notes,
+    ).model_dump()
+    await db.encomendas.insert_one(enc)
+    return {k: v for k, v in enc.items() if k != "_id"}
+
+
+@api.patch("/encomendas/{eid}")
+async def update_encomenda(eid: str, body: dict, _: dict = Depends(require_any)):
+    allowed = {"status", "deposit", "notes", "delivery_date", "delivery_time"}
+    upd = {k: v for k, v in body.items() if k in allowed}
+    await db.encomendas.update_one({"id": eid}, {"$set": upd})
+    return await db.encomendas.find_one({"id": eid}, {"_id": 0})
+
+
+@api.delete("/encomendas/{eid}")
+async def delete_encomenda(eid: str, _: dict = Depends(require_any)):
+    await db.encomendas.delete_one({"id": eid})
+    return {"ok": True}
+
+
+# ============================================================
+# Estoque
+# ============================================================
+@api.get("/estoque")
+async def list_estoque(_: dict = Depends(require_any)):
+    return await db.estoque_items.find({}, {"_id": 0}).sort("name", 1).to_list(500)
+
+
+@api.get("/estoque/alertas")
+async def estoque_alertas(_: dict = Depends(require_any)):
+    items = await db.estoque_items.find({}, {"_id": 0}).to_list(500)
+    return [i for i in items if i.get("quantity", 0) <= i.get("min_quantity", 0)]
+
+
+@api.post("/estoque")
+async def create_estoque(i: EstoqueItemIn, _: dict = Depends(require_gerente)):
+    doc = EstoqueItem(**i.model_dump()).model_dump()
+    await db.estoque_items.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/estoque/{iid}")
+async def update_estoque(iid: str, i: EstoqueItemIn, _: dict = Depends(require_gerente)):
+    await db.estoque_items.update_one({"id": iid}, {"$set": i.model_dump()})
+    return await db.estoque_items.find_one({"id": iid}, {"_id": 0})
+
+
+@api.delete("/estoque/{iid}")
+async def delete_estoque(iid: str, _: dict = Depends(require_gerente)):
+    await db.estoque_items.delete_one({"id": iid})
+    return {"ok": True}
+
+
+@api.post("/estoque/movimento")
+async def estoque_movimento(m: EstoqueMovimentoIn, user: dict = Depends(require_any)):
+    item = await db.estoque_items.find_one({"id": m.item_id})
+    if not item:
+        raise HTTPException(404, "Insumo não encontrado")
+    if m.type == "entrada":
+        new_qty = item["quantity"] + m.quantity
+    elif m.type == "saida":
+        new_qty = item["quantity"] - m.quantity
+    elif m.type == "ajuste":
+        new_qty = m.quantity
+    else:
+        raise HTTPException(400, "Tipo inválido")
+    await db.estoque_items.update_one({"id": m.item_id}, {"$set": {"quantity": new_qty}})
+    mov = {
+        "id": new_id(),
+        "item_id": m.item_id,
+        "item_name": item["name"],
+        "type": m.type,
+        "quantity": m.quantity,
+        "reason": m.reason,
+        "user_name": user["name"],
+        "date": now_iso(),
+    }
+    await db.estoque_mov.insert_one(mov)
+    return {"ok": True, "new_quantity": new_qty}
+
+
+@api.get("/estoque/movimentos")
+async def list_movimentos(item_id: Optional[str] = None, _: dict = Depends(require_any)):
+    q = {}
+    if item_id:
+        q["item_id"] = item_id
+    return await db.estoque_mov.find(q, {"_id": 0}).sort("date", -1).limit(200).to_list(200)
+
+
+# ============================================================
+# Dashboard (gerente)
+# ============================================================
+@api.get("/dashboard")
+async def dashboard(_: dict = Depends(require_gerente)):
+    today = datetime.now(timezone.utc).date().isoformat()
+    # closed orders today
+    orders = await db.orders.find({"status": "fechada"}, {"_id": 0}).to_list(2000)
+    today_orders = [o for o in orders if (o.get("closed_at") or "").startswith(today)]
+
+    faturamento_hoje = sum(o["total"] for o in today_orders)
+    num_vendas_hoje = len(today_orders)
+    ticket_medio = faturamento_hoje / num_vendas_hoje if num_vendas_hoje else 0
+
+    # por forma de pagamento hoje
+    por_pagamento = {}
+    for o in today_orders:
+        for p in o.get("payments", []):
+            por_pagamento[p["method"]] = por_pagamento.get(p["method"], 0) + p["amount"]
+
+    # top produtos
+    prod_count: dict[str, dict] = {}
+    for o in today_orders:
+        for i in o.get("items", []):
+            k = i["product_name"]
+            d = prod_count.setdefault(k, {"name": k, "quantidade": 0, "valor": 0})
+            d["quantidade"] += i["quantity"]
+            d["valor"] += i["total_price"]
+    top_produtos = sorted(prod_count.values(), key=lambda x: x["valor"], reverse=True)[:5]
+
+    # fiado total
+    customers = await db.customers.find({}, {"_id": 0}).to_list(1000)
+    total_fiado = sum(c.get("debt_balance", 0) for c in customers)
+    clientes_devedores = len([c for c in customers if c.get("debt_balance", 0) > 0])
+
+    # estoque alerta
+    estoque = await db.estoque_items.find({}, {"_id": 0}).to_list(500)
+    alertas_estoque = [i for i in estoque if i.get("quantity", 0) <= i.get("min_quantity", 0)]
+
+    # encomendas de hoje
+    encomendas = await db.encomendas.find({"delivery_date": today}, {"_id": 0}).to_list(100)
+
+    # 7-day sales trend
+    trend = []
+    for delta in range(6, -1, -1):
+        d = (datetime.now(timezone.utc).date() - timedelta(days=delta)).isoformat()
+        day_total = sum(o["total"] for o in orders if (o.get("closed_at") or "").startswith(d))
+        trend.append({"date": d, "total": round(day_total, 2)})
+
+    return {
+        "faturamento_hoje": round(faturamento_hoje, 2),
+        "vendas_hoje": num_vendas_hoje,
+        "ticket_medio": round(ticket_medio, 2),
+        "por_pagamento": por_pagamento,
+        "top_produtos": top_produtos,
+        "total_fiado": round(total_fiado, 2),
+        "clientes_devedores": clientes_devedores,
+        "alertas_estoque": alertas_estoque,
+        "encomendas_hoje": encomendas,
+        "trend_7dias": trend,
+    }
+
+
+# ============================================================
+# Mount
+# ============================================================
+@api.get("/")
+async def root():
+    return {"app": "Padaria POS", "status": "ok"}
+
+
+app.include_router(api)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+async def startup():
+    app.state.index_task = asyncio.create_task(ensure_indexes())
+    await seed_initial_data()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    app.state.index_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await app.state.index_task
+    client.close()
