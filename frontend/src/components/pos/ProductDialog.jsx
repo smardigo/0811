@@ -10,11 +10,11 @@ import { Minus, Plus, Pizza } from "lucide-react";
 import { money } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 
-export default function ProductDialog({ product, onClose, onConfirm }) {
-  const [qty, setQty] = useState(1);
-  const [variations, setVariations] = useState({});
-  const [halves, setHalves] = useState([]);
-  const [notes, setNotes] = useState("");
+export default function ProductDialog({ product, onClose, onConfirm, initial }) {
+  const [qty, setQty] = useState(initial?.quantity || 1);
+  const [variations, setVariations] = useState(initial?.variations_data || {});
+  const [halves, setHalves] = useState(initial?.pizza_halves || []);
+  const [notes, setNotes] = useState(initial?.notes || "");
 
   const toggleHalf = (flavor) => {
     setHalves((h) =>

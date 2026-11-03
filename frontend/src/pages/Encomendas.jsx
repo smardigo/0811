@@ -240,7 +240,7 @@ export default function Encomendas() {
                               {prod.is_pizza && <Pizza className="h-3 w-3 shrink-0" />}
                               <span className="truncate">{desc || "Opções não escolhidas"}</span>
                             </div>
-                            <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={() => setPicking({ index: i, product: prod })} data-testid={`encomenda-item-edit-options-${i}`}>
+                            <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={() => setPicking({ index: i, product: prod, initial: it })} data-testid={`encomenda-item-edit-options-${i}`}>
                               <SlidersHorizontal className="h-3 w-3 mr-1" /> Opções
                             </Button>
                           </div>
@@ -267,6 +267,7 @@ export default function Encomendas() {
       {picking && (
         <ProductDialog
           product={picking.product}
+          initial={picking.initial}
           onClose={() => setPicking(null)}
           onConfirm={(payload) => {
             updItem(picking.index, {

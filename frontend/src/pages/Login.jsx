@@ -114,7 +114,7 @@ export default function Login() {
                     data-testid={TEST_IDS.loginUsername}
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    placeholder="admin"
+                    placeholder="seu usuário"
                     autoComplete="username"
                     className="h-12 mt-1.5"
                   />

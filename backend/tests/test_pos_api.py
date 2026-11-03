@@ -182,7 +182,7 @@ class TestOrders:
         # cleanup
         op.post(f"{API}/customers/{c['id']}/pagamento", json={"customer_id": c["id"], "amount": 1000})
         requests.delete(f"{API}/customers/{c['id']}", headers={"Authorization": _login({"username": "admin", "password": "admin123"}).json() and f"Bearer {_login({'username': 'admin', 'password': 'admin123'}).json()['access_token']}"})
-        assert r.status_code == 400, f"negative payment accepted; balance became {bal}"
+        assert r.status_code in (400, 422), f"negative payment accepted; balance became {bal}"
 
 
 # ---------- Encomendas ----------

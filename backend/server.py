@@ -282,14 +282,26 @@ class Encomenda(BaseModel):
 
 
 class EncomendaIn(BaseModel):
-    customer_name: str
+    customer_name: str = Field(min_length=1)
     customer_phone: Optional[str] = None
     customer_id: Optional[str] = None
     delivery_date: str
     delivery_time: Optional[str] = None
     items: List[OrderItemIn] = []
-    deposit: float = 0.0
+    deposit: float = Field(default=0.0, ge=0)
     notes: Optional[str] = None
+
+
+class EncomendaUpdate(BaseModel):
+    status: Optional[str] = None
+    deposit: Optional[float] = Field(default=None, ge=0)
+    notes: Optional[str] = None
+    delivery_date: Optional[str] = None
+    delivery_time: Optional[str] = None
+
+
+ENCOMENDA_STATUSES = {"pendente", "em_producao", "pronta", "entregue", "cancelada"}
+ORDER_EDITABLE_STATUSES = {"aberta", "em_producao", "pronta", "aguardando_pagamento"}
 
 
 class EstoqueItem(BaseModel):
@@ -825,6 +837,9 @@ async def _build_item(it: OrderItemIn) -> OrderItem:
             raise HTTPException(400, "Selecione os sabores da pizza")
         if len(halves) > 4:
             raise HTTPException(400, "Máximo 4 sabores")
+        invalid = [h for h in halves if h not in product.get("pizza_flavors", [])]
+        if invalid:
+            raise HTTPException(400, f"Sabor inválido: {', '.join(invalid)}")
     delta, text = _format_variations(product, it.variations_data or {})
     unit_price += delta
     if text:
@@ -901,6 +916,8 @@ async def update_order(oid: str, u: OrderUpdate, _: dict = Depends(require_any))
     for k, v in u.model_dump().items():
         if v is not None:
             upd[k] = v
+    if "status" in upd and upd["status"] not in ORDER_EDITABLE_STATUSES:
+        raise HTTPException(400, "Status inválido (use o fechamento de venda)")
     if "customer_id" in upd and upd["customer_id"]:
         c = await db.customers.find_one({"id": upd["customer_id"]})
         upd["customer_name"] = c["name"] if c else None
@@ -1041,6 +1058,11 @@ async def checkout_order(oid: str, req: CheckoutRequest, user: dict = Depends(re
 
 @api.delete("/orders/{oid}")
 async def cancel_order(oid: str, _: dict = Depends(require_gerente)):
+    order = await db.orders.find_one({"id": oid}, {"status": 1})
+    if not order:
+        raise HTTPException(404, "Comanda não encontrada")
+    if order["status"] == "fechada":
+        raise HTTPException(400, "Venda já fechada não pode ser cancelada")
     await db.orders.update_one({"id": oid}, {"$set": {"status": "cancelada", "closed_at": now_iso()}})
     return {"ok": True}
 
@@ -1061,6 +1083,10 @@ async def create_encomenda(e: EncomendaIn, user: dict = Depends(require_any)):
         built = await _build_item(it)
         items.append(built.model_dump())
         total += built.total_price
+    if not e.customer_name.strip():
+        raise HTTPException(400, "Informe o nome do cliente")
+    if e.deposit > total + 0.009:
+        raise HTTPException(400, "Sinal maior que o total da encomenda")
     enc = Encomenda(
         customer_name=e.customer_name,
         customer_phone=e.customer_phone,
@@ -1077,9 +1103,12 @@ async def create_encomenda(e: EncomendaIn, user: dict = Depends(require_any)):
 
 
 @api.patch("/encomendas/{eid}")
-async def update_encomenda(eid: str, body: dict, _: dict = Depends(require_any)):
-    allowed = {"status", "deposit", "notes", "delivery_date", "delivery_time"}
-    upd = {k: v for k, v in body.items() if k in allowed}
+async def update_encomenda(eid: str, body: EncomendaUpdate, _: dict = Depends(require_any)):
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "status" in upd and upd["status"] not in ENCOMENDA_STATUSES:
+        raise HTTPException(400, "Status inválido")
+    if not upd:
+        raise HTTPException(400, "Nada para atualizar")
     await db.encomendas.update_one({"id": eid}, {"$set": upd})
     return await db.encomendas.find_one({"id": eid}, {"_id": 0})
 

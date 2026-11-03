@@ -55,7 +55,7 @@ export default function CheckoutDialog({ order, onClose, onConfirm }) {
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl" data-testid="checkout-dialog">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto scrollbar-thin" data-testid="checkout-dialog">
         <DialogHeader>
           <DialogTitle className="font-display text-2xl">Finalizar venda</DialogTitle>
           <p className="text-sm text-stone-500">

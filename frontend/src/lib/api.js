@@ -18,6 +18,15 @@ apiClient.interceptors.request.use((config) => {
 apiClient.interceptors.response.use(
   (r) => r,
   (err) => {
+    const detail = err.response?.data?.detail;
+    if (Array.isArray(detail)) {
+      err.response.data.detail = detail
+        .map((d) => (d?.type === "greater_than" || d?.type === "greater_than_equal" ? "Informe um valor maior que zero" : d?.msg || "Dados inválidos"))
+        .filter((m, i, a) => a.indexOf(m) === i)
+        .join("; ");
+    } else if (detail && typeof detail !== "string") {
+      err.response.data.detail = "Dados inválidos";
+    }
     if (err.response?.status === 401) {
       localStorage.removeItem("pos_token");
       localStorage.removeItem("pos_user");
