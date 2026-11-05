@@ -61,8 +61,8 @@ export default function Layout() {
               <Croissant className="h-5 w-5 text-white" />
             </div>
             <div className="min-w-0">
-              <div className="font-display font-bold text-base leading-tight">Tradição</div>
-              <div className="text-[10px] uppercase tracking-widest text-amber-300/70">Padaria POS</div>
+              <div className="font-display font-bold text-base leading-tight">Assunção &amp; Paladini</div>
+              <div className="text-[10px] uppercase tracking-widest text-amber-300/70">Padaria &amp; Lanchonete</div>
             </div>
           </div>
         </div>

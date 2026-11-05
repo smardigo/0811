@@ -61,8 +61,8 @@ export default function Login() {
               <Croissant className="h-6 w-6" />
             </div>
             <div>
-              <div className="font-display text-xl font-bold leading-none">Tradição</div>
-              <div className="text-xs text-amber-100">Padaria & Lanchonete</div>
+              <div className="font-display text-xl font-bold leading-none">Assunção &amp; Paladini</div>
+              <div className="text-xs text-amber-100">Padaria &amp; Lanchonete</div>
             </div>
           </div>
           <div className="space-y-4">
@@ -88,8 +88,8 @@ export default function Login() {
               <Croissant className="h-5 w-5" />
             </div>
             <div>
-              <div className="font-display text-lg font-bold">Tradição POS</div>
-              <div className="text-xs text-stone-500">Padaria & Lanchonete</div>
+              <div className="font-display text-lg font-bold">Assunção &amp; Paladini</div>
+              <div className="text-xs text-stone-500">Padaria &amp; Lanchonete</div>
             </div>
           </div>
 

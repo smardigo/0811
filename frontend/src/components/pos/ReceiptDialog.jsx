@@ -111,7 +111,7 @@ export default function ReceiptDialog({ order, onClose }) {
 
           <div className="text-center text-[10px] text-stone-500 pb-6 px-6">
             Obrigado pela preferência! ☕<br />
-            Tradição · {new Date().getFullYear()}
+            Assunção &amp; Paladini · {new Date().getFullYear()}
           </div>
         </div>
 
