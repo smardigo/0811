@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth";
 import { TEST_IDS } from "@/constants/testIds";
-import { Croissant, Delete } from "lucide-react";
+import { Delete } from "lucide-react";
 
 export default function Login() {
   const { login, user } = useAuth();
@@ -49,20 +49,20 @@ export default function Login() {
       {/* Left panel - brand */}
       <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden"
         style={{
-          backgroundImage: `url('https://images.unsplash.com/photo-1623334044303-241021148842?w=1200')`,
+          backgroundImage: `linear-gradient(135deg, rgba(28,20,15,0.92), rgba(55,30,15,0.88)), url('/logo.webp')`,
           backgroundSize: "cover",
           backgroundPosition: "center",
         }}
       >
-        <div className="absolute inset-0 bg-gradient-to-br from-amber-900/70 via-orange-800/60 to-amber-700/50" />
+        <div className="absolute inset-0" />
         <div className="relative z-10 flex flex-col justify-between p-12 text-white">
           <div className="flex items-center gap-3">
-            <div className="h-11 w-11 rounded-xl bg-amber-500 flex items-center justify-center">
-              <Croissant className="h-6 w-6" />
+            <div className="h-14 w-14 rounded-xl bg-white/10 border border-amber-400/40 overflow-hidden flex items-center justify-center shadow-xl">
+              <img src="/logo.webp" alt="Assunção &amp; Paladini" className="h-full w-full object-cover" />
             </div>
             <div>
               <div className="font-display text-xl font-bold leading-none">Assunção &amp; Paladini</div>
-              <div className="text-xs text-amber-100">Padaria &amp; Lanchonete</div>
+              <div className="text-xs text-amber-100">Padaria · Lanchonete · Pizzaria</div>
             </div>
           </div>
           <div className="space-y-4">
@@ -84,12 +84,12 @@ export default function Login() {
       <div className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-md">
           <div className="lg:hidden flex items-center gap-3 mb-8">
-            <div className="h-10 w-10 rounded-xl bg-amber-600 flex items-center justify-center text-white">
-              <Croissant className="h-5 w-5" />
+            <div className="h-12 w-12 rounded-xl overflow-hidden ring-1 ring-amber-200 bg-stone-900 flex items-center justify-center">
+              <img src="/logo.webp" alt="Assunção &amp; Paladini" className="h-full w-full object-cover" />
             </div>
             <div>
               <div className="font-display text-lg font-bold">Assunção &amp; Paladini</div>
-              <div className="text-xs text-stone-500">Padaria &amp; Lanchonete</div>
+              <div className="text-xs text-stone-500">Padaria · Lanchonete · Pizzaria</div>
             </div>
           </div>
 

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { apiClient } from "@/lib/api";
 import {
-  Croissant, ShoppingBag, ClipboardList, BookOpen, CalendarDays,
+  ShoppingBag, ClipboardList, BookOpen, CalendarDays,
   PackageSearch, LineChart, Users, LogOut, Bell, Menu, UtensilsCrossed
 } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
@@ -57,12 +57,12 @@ export default function Layout() {
       <>
         <div className="p-5 border-b border-stone-800">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-amber-600 flex items-center justify-center shrink-0">
-              <Croissant className="h-5 w-5 text-white" />
+            <div className="h-10 w-10 rounded-xl overflow-hidden ring-1 ring-amber-500/60 bg-stone-950 flex items-center justify-center shrink-0">
+              <img src="/logo.webp" alt="Assunção &amp; Paladini" className="h-full w-full object-cover" />
             </div>
             <div className="min-w-0">
               <div className="font-display font-bold text-base leading-tight">Assunção &amp; Paladini</div>
-              <div className="text-[10px] uppercase tracking-widest text-amber-300/70">Padaria &amp; Lanchonete</div>
+              <div className="text-[10px] uppercase tracking-widest text-amber-300/70">Padaria · Lanchonete · Pizzaria</div>
             </div>
           </div>
         </div>

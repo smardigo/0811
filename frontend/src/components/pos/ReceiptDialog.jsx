@@ -19,7 +19,7 @@ export default function ReceiptDialog({ order, onClose }) {
         <div className="print-area">
           <div className="text-center border-b-2 border-dashed border-stone-300 pb-3 mb-3 pt-6 px-6">
             <div className="font-display font-extrabold text-xl">PADARIA TRADIÇÃO</div>
-            <div className="text-[10px] text-stone-600 uppercase tracking-wider">Padaria & Lanchonete</div>
+            <div className="text-[10px] text-stone-600 uppercase tracking-wider">Padaria · Lanchonete · Pizzaria</div>
             <div className="text-[10px] text-stone-500 mt-1">Rua do Pão, 123 · (11) 5555-0000</div>
             <div className="text-[10px] text-stone-500">CNPJ: 00.000.000/0000-00</div>
             <div className="text-[10px] mt-2 font-semibold uppercase">Não é documento fiscal</div>
