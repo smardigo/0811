@@ -1587,6 +1587,24 @@ app.add_middleware(
 )
 
 
+# Optional: serve the compiled React build when running as a desktop app.
+if os.environ.get("SERVE_FRONTEND") == "1" and os.environ.get("FRONTEND_DIR"):
+    from pathlib import Path as _P
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    _front = _P(os.environ["FRONTEND_DIR"])
+    if (_front / "static").is_dir():
+        app.mount("/static", StaticFiles(directory=str(_front / "static")), name="static")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa(full_path: str):
+        candidate = _front / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_front / "index.html")
+
+
 @app.on_event("startup")
 async def startup():
     app.state.index_task = asyncio.create_task(ensure_indexes())

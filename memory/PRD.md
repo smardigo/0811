@@ -10,6 +10,7 @@ Crie um sistema web para padaria e lanchonete com as seguintes funcionalidades:
 6. Encomendas: pedidos futuros.
 7. Estoque: alerta de quantidade baixa.
 Requisitos: 100% offline (instalação em PC local); customização de pizza (meio-a-meio).
+Pedido adicional: exportar como aplicativo Windows com instalador .exe e .msi.
 
 ## Perfis
 - Gerente: Caixa, Comandas, Cardápio, Insumos, Produção, Revenda, Fiado, Encomendas, Dashboard, Usuários.
@@ -19,39 +20,28 @@ Requisitos: 100% offline (instalação em PC local); customização de pizza (me
 - Backend: FastAPI + MongoDB; JWT custom + Bcrypt; PIN de 4 dígitos único; fuso America/Sao_Paulo.
 - Frontend: React + Shadcn UI; Tailwind.
 - Sem integrações de terceiros (requisito offline). Nome/logo: Assunção & Paladini — Padaria · Lanchonete · Pizzaria.
+- Desktop: `desktop/launcher.py` (pywebview) inicia mongod embarcado + uvicorn in-process e abre janela própria.
 
 ## Modelo de estoque (3 camadas)
-- **Insumos**: matéria-prima (farinha, açúcar, ovo, mussarela). Entra por compra, sai por produção.
-- **Revenda**: produtos prontos de prateleira (refri, bombom, leite). Baixa automática na venda.
-- **Produção**: produtos feitos pela casa (pão, pizza congelada), com lote + data de produção + validade, FIFO.
-  - "Produzir lote": consome insumos conforme a ficha técnica e entra no estoque de pronto.
-  - Venda baixa do pronto (FIFO). Pizza meio-a-meio divide a baixa entre os sabores (1/N por meia).
-  - Descartar: reduz lote + pronto.
+- Insumos (matéria-prima), Revenda (itens de prateleira), Produção (produtos feitos pela casa com lote e validade FIFO).
+- "Produzir lote" consome insumos pela ficha técnica; venda baixa de Revenda ou Pronto; pizza meio-a-meio divide por sabor.
 
 ## Ficha técnica no Cardápio
-- Produto não-pizza: lista de insumos × quantidade por unidade.
-- Pizza: `base_recipe` (massa/molho comuns) + `recipe_by_flavor` por sabor.
-- Margem % individual por produto; **Custo**, **Preço sugerido** e **Margem real** exibidos.
-- Aviso se preço de venda < custo.
+- Produto não-pizza: `recipe` com insumos × quantidade.
+- Pizza: `base_recipe` + `recipe_by_flavor` por sabor.
+- Margem % individual, Custo e Preço sugerido exibidos.
 
 ## Implementado (2026-11-05 / 2026-11-06)
-- Login senha/PIN, roles, PIN único.
-- Cardápio com variações + pizza meio-a-meio (até 4 sabores).
-- Comandas por mesa, status com transições controladas.
-- Caixa: múltiplos pagamentos, troco só em dinheiro, cupom imprimível com o nome Assunção & Paladini.
-- Fiado atômico com limite de crédito.
-- Encomendas com data/hora, itens com variações/pizza (reusa ProductDialog), sinal validado.
-- Estoque dividido em 3 abas: Revenda / Insumos / Produção.
-- Lotes com validade, FIFO na venda, descarte, alertas de vencimento (≤3 dias).
-- Cálculo de custo e preço sugerido por produto; margem individual.
-- Cascade delete: remover produto remove prontos+lotes; remover item pronto remove lotes.
-- Layout responsivo com Sheet mobile.
+- Login, cardápio, comandas, caixa, cupom, fiado, encomendas, estoque em 3 abas, produção com FIFO e descarte, cascade delete.
 - 97/97 pytest + smoke frontend 100% (iteration_6).
+- Pacote desktop: `desktop/launcher.py`, `desktop/server.spec`, `installer/inno-setup.iss`, `installer/wix/Product.wxs`, workflow `.github/workflows/build-windows.yml` que gera `.exe` + `.msi` e publica como Release.
+- Backend ganhou mount opcional para servir o build React quando `SERVE_FRONTEND=1`.
 
 ## Backlog (P1/P2)
-- P1: @media print no cupom para impressora térmica 80mm.
+- P1: Testar o workflow Windows no primeiro push e corrigir hidden-imports do PyInstaller que aparecerem.
+- P1: @media print no cupom (80mm).
 - P1: Impedir estoque negativo em saída manual (ou avisar).
 - P2: Movimento manual em prontos deveria criar um lote implícito.
-- P2: Shadcn Calendar na validade (hoje usa input[type=date] nativo).
-- P2: KDS para comandas em produção.
-- P2: Backup local em .json.
+- P2: Assinatura de código (code signing) para o .exe/.msi.
+- P2: Auto-update (electron-updater equivalente via GitHub Releases + sparkle-like).
+- P2: Shadcn Calendar na validade; KDS; backup .json.
