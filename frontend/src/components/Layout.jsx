@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import { apiClient } from "@/lib/api";
 import {
   ShoppingBag, ClipboardList, BookOpen, CalendarDays,
-  PackageSearch, LineChart, Users, LogOut, Bell, Menu, UtensilsCrossed
+  PackageSearch, LineChart, Users, LogOut, Bell, Menu, UtensilsCrossed, Wheat, ChefHat
 } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -45,7 +45,9 @@ export default function Layout() {
     { to: "/encomendas", label: "Encomendas", icon: CalendarDays, testid: TEST_IDS.sidebarEncomendas, roles: ["gerente", "operador"] },
     { to: "/fiado", label: "Fiado", icon: BookOpen, testid: TEST_IDS.sidebarFiado, roles: ["gerente", "operador"] },
     { to: "/cardapio", label: "Cardápio", icon: UtensilsCrossed, testid: TEST_IDS.sidebarCardapio, roles: ["gerente"] },
-    { to: "/estoque", label: "Estoque", icon: PackageSearch, testid: TEST_IDS.sidebarEstoque, roles: ["gerente"] },
+    { to: "/insumos", label: "Insumos", icon: Wheat, testid: "sidebar-nav-insumos", roles: ["gerente"] },
+    { to: "/producao", label: "Produção", icon: ChefHat, testid: "sidebar-nav-producao", roles: ["gerente"] },
+    { to: "/estoque", label: "Revenda", icon: PackageSearch, testid: TEST_IDS.sidebarEstoque, roles: ["gerente"] },
     { to: "/dashboard", label: "Dashboard", icon: LineChart, testid: TEST_IDS.sidebarDashboard, roles: ["gerente"] },
     { to: "/usuarios", label: "Usuários", icon: Users, testid: TEST_IDS.sidebarUsuarios, roles: ["gerente"] },
   ];
@@ -83,7 +85,7 @@ export default function Layout() {
             >
               <n.icon className="h-4.5 w-4.5 shrink-0" style={{ width: 18, height: 18 }} />
               <span>{n.label}</span>
-              {n.label === "Estoque" && alertsCount > 0 && (
+              {n.label === "Revenda" && alertsCount > 0 && (
                 <Badge className="ml-auto bg-red-600 text-white text-[10px] h-5 px-1.5">{alertsCount}</Badge>
               )}
             </NavLink>

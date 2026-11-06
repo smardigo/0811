@@ -9,6 +9,8 @@ import Cardapio from "@/pages/Cardapio";
 import Fiado from "@/pages/Fiado";
 import Encomendas from "@/pages/Encomendas";
 import Estoque from "@/pages/Estoque";
+import Insumos from "@/pages/Insumos";
+import Producao from "@/pages/Producao";
 import Dashboard from "@/pages/Dashboard";
 import Usuarios from "@/pages/Usuarios";
 
@@ -46,6 +48,8 @@ function App() {
             <Route path="/fiado" element={<Fiado />} />
             <Route path="/encomendas" element={<Encomendas />} />
             <Route path="/estoque" element={<Protected roles={["gerente"]}><Estoque /></Protected>} />
+            <Route path="/insumos" element={<Protected roles={["gerente"]}><Insumos /></Protected>} />
+            <Route path="/producao" element={<Protected roles={["gerente"]}><Producao /></Protected>} />
             <Route path="/cardapio" element={<Protected roles={["gerente"]}><Cardapio /></Protected>} />
             <Route path="/dashboard" element={<Protected roles={["gerente"]}><Dashboard /></Protected>} />
             <Route path="/usuarios" element={<Protected roles={["gerente"]}><Usuarios /></Protected>} />

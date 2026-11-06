@@ -148,6 +148,13 @@ class ProductVariation(BaseModel):
     options: List[VariationOption] = []
 
 
+class RecipeItem(BaseModel):
+    insumo_id: str
+    insumo_name: str = ""
+    quantity: float = Field(gt=0)
+    unit: str = "un"
+
+
 class Product(BaseModel):
     id: str = Field(default_factory=new_id)
     name: str
@@ -163,6 +170,14 @@ class Product(BaseModel):
     tracks_stock: bool = False
     stock_item_id: Optional[str] = None  # link to estoque item
     stock_usage: float = 1.0  # units consumed per sale
+    # Ficha técnica
+    production_mode: str = "none"  # 'revenda' | 'pronto' | 'none'
+    pronto_item_id: Optional[str] = None  # non-pizza prontos
+    recipe: List[RecipeItem] = []
+    base_recipe: List[RecipeItem] = []  # pizza: massa/molho comuns
+    recipe_by_flavor: dict = {}  # pizza: {flavor: [RecipeItem]}
+    margin_pct: float = 100.0
+    cost_override: Optional[float] = None
 
 
 class ProductIn(BaseModel):
@@ -179,6 +194,13 @@ class ProductIn(BaseModel):
     tracks_stock: bool = False
     stock_item_id: Optional[str] = None
     stock_usage: float = 1.0
+    production_mode: str = "none"
+    pronto_item_id: Optional[str] = None
+    recipe: List[RecipeItem] = []
+    base_recipe: List[RecipeItem] = []
+    recipe_by_flavor: dict = {}
+    margin_pct: float = 100.0
+    cost_override: Optional[float] = None
 
 
 class Customer(BaseModel):
@@ -313,6 +335,9 @@ class EstoqueItem(BaseModel):
     cost_price: float = 0.0
     supplier: Optional[str] = None
     notes: Optional[str] = None
+    type: str = "revenda"  # 'revenda' | 'insumo' | 'pronto'
+    product_id: Optional[str] = None  # when type='pronto'
+    flavor: Optional[str] = None  # pizza prontos
 
 
 class EstoqueItemIn(BaseModel):
@@ -323,6 +348,7 @@ class EstoqueItemIn(BaseModel):
     cost_price: float = 0.0
     supplier: Optional[str] = None
     notes: Optional[str] = None
+    type: str = "revenda"
 
 
 class EstoqueMovimento(BaseModel):
@@ -393,9 +419,13 @@ INDEXES = {
                IndexModel([("created_at", DESCENDING)], name="created_at")],
     "encomendas": [IndexModel([("id", ASCENDING)], unique=True, name="id"),
                    IndexModel([("delivery_date", ASCENDING)], name="delivery_date")],
-    "estoque_items": [IndexModel([("id", ASCENDING)], unique=True, name="id")],
+    "estoque_items": [IndexModel([("id", ASCENDING)], unique=True, name="id"),
+                       IndexModel([("type", ASCENDING)], name="type")],
     "estoque_mov": [IndexModel([("id", ASCENDING)], unique=True, name="id"),
                     IndexModel([("date", DESCENDING)], name="date")],
+    "production_batches": [IndexModel([("id", ASCENDING)], unique=True, name="id"),
+                           IndexModel([("estoque_item_id", ASCENDING)], name="estoque_item_id"),
+                           IndexModel([("produced_at", ASCENDING)], name="produced_at")],
     "fiado_mov": [IndexModel([("customer_id", ASCENDING)], name="customer"),
                   IndexModel([("date", DESCENDING)], name="date")],
 }
@@ -1035,23 +1065,7 @@ async def checkout_order(oid: str, req: CheckoutRequest, user: dict = Depends(re
 
     # Decrement stock for products linked
     for it in order.get("items", []):
-        prod = await db.products.find_one({"id": it["product_id"]})
-        if prod and prod.get("tracks_stock") and prod.get("stock_item_id"):
-            qty = it["quantity"] * prod.get("stock_usage", 1.0)
-            await db.estoque_items.update_one(
-                {"id": prod["stock_item_id"]},
-                {"$inc": {"quantity": -qty}}
-            )
-            await db.estoque_mov.insert_one({
-                "id": new_id(),
-                "item_id": prod["stock_item_id"],
-                "item_name": prod.get("name", ""),
-                "type": "saida",
-                "quantity": qty,
-                "reason": f"Venda comanda #{order['number']}",
-                "user_name": user["name"],
-                "date": now_iso(),
-            })
+        await _apply_sale_consumption(it, order["number"], user["name"])
 
     return await db.orders.find_one({"id": oid}, {"_id": 0})
 
@@ -1130,13 +1144,21 @@ async def delete_encomenda(eid: str, _: dict = Depends(require_any)):
 # Estoque
 # ============================================================
 @api.get("/estoque")
-async def list_estoque(_: dict = Depends(require_any)):
-    return await db.estoque_items.find({}, {"_id": 0}).sort("name", 1).to_list(500)
+async def list_estoque(type: Optional[str] = None, _: dict = Depends(require_any)):
+    q: dict = {}
+    if type:
+        q["type"] = type
+    else:
+        q["type"] = {"$in": ["revenda", None]}
+    items = await db.estoque_items.find(q, {"_id": 0}).sort("name", 1).to_list(500)
+    for it in items:
+        it.setdefault("type", "revenda")
+    return items
 
 
 @api.get("/estoque/alertas")
 async def estoque_alertas(_: dict = Depends(require_any)):
-    items = await db.estoque_items.find({}, {"_id": 0}).to_list(500)
+    items = await db.estoque_items.find({"type": {"$in": ["revenda", "insumo", None]}}, {"_id": 0}).to_list(500)
     return [i for i in items if i.get("quantity", 0) <= i.get("min_quantity", 0)]
 
 
@@ -1193,6 +1215,253 @@ async def list_movimentos(item_id: Optional[str] = None, _: dict = Depends(requi
     if item_id:
         q["item_id"] = item_id
     return await db.estoque_mov.find(q, {"_id": 0}).sort("date", -1).limit(200).to_list(200)
+
+
+
+# ============================================================
+# Ficha técnica, Produção, Prontos
+# ============================================================
+def _recipe_for(prod: dict, flavor: Optional[str]) -> list[dict]:
+    """Return the per-unit recipe for a product (with flavor for pizzas)."""
+    if prod.get("is_pizza"):
+        if not flavor:
+            raise HTTPException(400, "Informe o sabor para pizzas")
+        if flavor not in prod.get("pizza_flavors", []):
+            raise HTTPException(400, "Sabor inválido")
+        flavor_recipe = (prod.get("recipe_by_flavor") or {}).get(flavor) or []
+        return list(prod.get("base_recipe") or []) + list(flavor_recipe)
+    return list(prod.get("recipe") or [])
+
+
+async def _compute_cost(prod: dict, flavor: Optional[str], quantity: float = 1.0) -> dict:
+    recipe = _recipe_for(prod, flavor)
+    if not recipe:
+        raise HTTPException(400, "Produto sem ficha técnica")
+    rows = []
+    cost_total = 0.0
+    for r in recipe:
+        item = await db.estoque_items.find_one({"id": r["insumo_id"]}, {"_id": 0})
+        name = item.get("name") if item else r.get("insumo_name", "insumo")
+        unit = item.get("unit") if item else r.get("unit", "un")
+        price = float(item.get("cost_price", 0)) if item else 0.0
+        need = float(r["quantity"]) * quantity
+        available = float(item.get("quantity", 0)) if item else 0.0
+        line_cost = need * price
+        cost_total += line_cost
+        rows.append({
+            "insumo_id": r["insumo_id"], "insumo_name": name,
+            "needed": round(need, 4), "unit": unit, "cost_unit": price,
+            "line_cost": round(line_cost, 4), "available": available,
+        })
+    custo_unit = cost_total / quantity if quantity else 0
+    margin = float(prod.get("margin_pct", 100))
+    return {
+        "custo": round(cost_total, 4),
+        "custo_unitario": round(custo_unit, 4),
+        "margem_pct": margin,
+        "preco_sugerido": round(custo_unit * (1 + margin / 100), 2),
+        "insumos": rows,
+    }
+
+
+@api.get("/products/{pid}/custo")
+async def product_cost(pid: str, flavor: Optional[str] = None, quantity: float = 1.0,
+                       _: dict = Depends(require_gerente)):
+    prod = await db.products.find_one({"id": pid}, {"_id": 0})
+    if not prod:
+        raise HTTPException(404, "Produto não encontrado")
+    return await _compute_cost(prod, flavor, quantity or 1.0)
+
+
+class ProducaoIn(BaseModel):
+    product_id: str
+    flavor: Optional[str] = None
+    quantity: float = Field(gt=0)
+    expiry_date: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DescarteIn(BaseModel):
+    quantity: float = Field(gt=0)
+    reason: Optional[str] = None
+
+
+async def _get_or_create_pronto(prod: dict, flavor: Optional[str]) -> dict:
+    if prod.get("is_pizza"):
+        item = await db.estoque_items.find_one(
+            {"type": "pronto", "product_id": prod["id"], "flavor": flavor}, {"_id": 0}
+        )
+        name = f"{prod['name']} — {flavor} (pronto)"
+    else:
+        item = None
+        if prod.get("pronto_item_id"):
+            item = await db.estoque_items.find_one({"id": prod["pronto_item_id"]}, {"_id": 0})
+        name = f"{prod['name']} (pronto)"
+    if item:
+        return item
+    new = {
+        "id": new_id(), "name": name, "unit": "un",
+        "quantity": 0.0, "min_quantity": 0.0, "cost_price": 0.0,
+        "type": "pronto", "product_id": prod["id"], "flavor": flavor,
+    }
+    await db.estoque_items.insert_one(new)
+    if not prod.get("is_pizza"):
+        await db.products.update_one({"id": prod["id"]}, {"$set": {"pronto_item_id": new["id"]}})
+    return new
+
+
+@api.get("/producao")
+async def list_batches(status: Optional[str] = None, _: dict = Depends(require_gerente)):
+    q: dict = {}
+    if status == "ativo":
+        q["quantity_remaining"] = {"$gt": 0}
+    elif status == "esgotado":
+        q["quantity_remaining"] = {"$lte": 0}
+    return await db.production_batches.find(q, {"_id": 0}).sort("produced_at", -1).to_list(500)
+
+
+@api.post("/producao")
+async def create_batch(p: ProducaoIn, user: dict = Depends(require_gerente)):
+    prod = await db.products.find_one({"id": p.product_id}, {"_id": 0})
+    if not prod:
+        raise HTTPException(404, "Produto não encontrado")
+    if prod.get("production_mode") != "pronto":
+        raise HTTPException(400, "Este produto não está no modo de produção própria")
+    recipe = _recipe_for(prod, p.flavor)
+    if not recipe:
+        raise HTTPException(400, "Produto sem ficha técnica para este sabor")
+    # Validate insumo availability
+    shortages = []
+    for r in recipe:
+        need = float(r["quantity"]) * p.quantity
+        ins = await db.estoque_items.find_one({"id": r["insumo_id"]})
+        if not ins or ins.get("quantity", 0) + 0.0001 < need:
+            have = ins.get("quantity", 0) if ins else 0
+            shortages.append(f"{ins.get('name', r.get('insumo_name', 'insumo')) if ins else 'insumo'} (precisa {need:.3f}, tem {have})")
+    if shortages:
+        raise HTTPException(400, "Insumo insuficiente: " + "; ".join(shortages))
+
+    # Consume insumos
+    cost_total = 0.0
+    for r in recipe:
+        need = float(r["quantity"]) * p.quantity
+        ins = await db.estoque_items.find_one({"id": r["insumo_id"]})
+        cost_total += need * float(ins.get("cost_price", 0))
+        await db.estoque_items.update_one({"id": r["insumo_id"]}, {"$inc": {"quantity": -need}})
+        await db.estoque_mov.insert_one({
+            "id": new_id(), "item_id": r["insumo_id"], "item_name": ins["name"],
+            "type": "saida", "quantity": need,
+            "reason": f"Produção: {prod['name']}" + (f" — {p.flavor}" if p.flavor else ""),
+            "user_name": user["name"], "date": now_iso(),
+        })
+
+    pronto = await _get_or_create_pronto(prod, p.flavor)
+    await db.estoque_items.update_one({"id": pronto["id"]}, {"$inc": {"quantity": p.quantity}})
+
+    batch = {
+        "id": new_id(),
+        "estoque_item_id": pronto["id"],
+        "product_id": prod["id"],
+        "product_name": prod["name"],
+        "flavor": p.flavor,
+        "quantity_initial": p.quantity,
+        "quantity_remaining": p.quantity,
+        "produced_at": now_iso(),
+        "expiry_date": p.expiry_date,
+        "cost_total": round(cost_total, 4),
+        "cost_unit": round(cost_total / p.quantity, 4) if p.quantity else 0,
+        "user_name": user["name"],
+        "notes": p.notes,
+    }
+    await db.production_batches.insert_one(batch)
+    return {k: v for k, v in batch.items() if k != "_id"}
+
+
+@api.post("/producao/{bid}/descartar")
+async def descartar_batch(bid: str, body: DescarteIn, user: dict = Depends(require_gerente)):
+    batch = await db.production_batches.find_one({"id": bid})
+    if not batch:
+        raise HTTPException(404, "Lote não encontrado")
+    qty = min(body.quantity, batch["quantity_remaining"])
+    if qty <= 0:
+        raise HTTPException(400, "Lote já consumido")
+    await db.production_batches.update_one({"id": bid}, {"$inc": {"quantity_remaining": -qty}})
+    await db.estoque_items.update_one({"id": batch["estoque_item_id"]}, {"$inc": {"quantity": -qty}})
+    await db.estoque_mov.insert_one({
+        "id": new_id(), "item_id": batch["estoque_item_id"],
+        "item_name": batch["product_name"] + (f" — {batch['flavor']}" if batch.get("flavor") else ""),
+        "type": "saida", "quantity": qty,
+        "reason": f"Descarte: {body.reason or 'sem motivo'}",
+        "user_name": user["name"], "date": now_iso(),
+    })
+    return {"ok": True}
+
+
+async def _consume_pronto(pronto: dict, qty: float, ref: str, user_name: str):
+    """FIFO-consume quantity from production_batches of this estoque pronto item."""
+    await db.estoque_items.update_one({"id": pronto["id"]}, {"$inc": {"quantity": -qty}})
+    remaining = qty
+    cursor = db.production_batches.find(
+        {"estoque_item_id": pronto["id"], "quantity_remaining": {"$gt": 0}},
+    ).sort([("expiry_date", 1), ("produced_at", 1)])
+    async for b in cursor:
+        if remaining <= 0.0001:
+            break
+        take = min(remaining, b["quantity_remaining"])
+        await db.production_batches.update_one({"id": b["id"]}, {"$inc": {"quantity_remaining": -take}})
+        remaining -= take
+    await db.estoque_mov.insert_one({
+        "id": new_id(), "item_id": pronto["id"],
+        "item_name": pronto.get("name", "pronto"),
+        "type": "saida", "quantity": qty,
+        "reason": ref, "user_name": user_name, "date": now_iso(),
+    })
+
+
+async def _apply_sale_consumption(it: dict, order_number: int, user_name: str):
+    prod = await db.products.find_one({"id": it["product_id"]}, {"_id": 0})
+    if not prod:
+        return
+    mode = prod.get("production_mode") or ("revenda" if prod.get("stock_item_id") else "none")
+    qty = float(it.get("quantity", 1))
+    ref = f"Venda comanda #{order_number}"
+    if mode == "revenda" and prod.get("stock_item_id"):
+        total_qty = qty * float(prod.get("stock_usage", 1.0))
+        await db.estoque_items.update_one({"id": prod["stock_item_id"]}, {"$inc": {"quantity": -total_qty}})
+        await db.estoque_mov.insert_one({
+            "id": new_id(), "item_id": prod["stock_item_id"],
+            "item_name": prod.get("name", ""), "type": "saida",
+            "quantity": total_qty, "reason": ref, "user_name": user_name, "date": now_iso(),
+        })
+    elif mode == "pronto":
+        if prod.get("is_pizza"):
+            halves = it.get("pizza_halves") or []
+            if not halves:
+                return
+            fraction = qty / len(halves)
+            for flavor in halves:
+                pronto = await db.estoque_items.find_one(
+                    {"type": "pronto", "product_id": prod["id"], "flavor": flavor}, {"_id": 0}
+                )
+                if pronto:
+                    await _consume_pronto(pronto, fraction, ref, user_name)
+        else:
+            if prod.get("pronto_item_id"):
+                pronto = await db.estoque_items.find_one({"id": prod["pronto_item_id"]}, {"_id": 0})
+                if pronto:
+                    await _consume_pronto(pronto, qty, ref, user_name)
+
+
+async def migrate_add_estoque_type():
+    """Ensure legacy estoque_items have a type (defaults to 'revenda')."""
+    await db.estoque_items.update_many(
+        {"type": {"$exists": False}}, {"$set": {"type": "revenda"}}
+    )
+    # Products: if they have stock_item_id and no production_mode set, assume revenda
+    await db.products.update_many(
+        {"stock_item_id": {"$ne": None}, "production_mode": {"$in": [None, "none"]}},
+        {"$set": {"production_mode": "revenda"}}
+    )
 
 
 # ============================================================
@@ -1285,6 +1554,7 @@ app.add_middleware(
 async def startup():
     app.state.index_task = asyncio.create_task(ensure_indexes())
     await seed_initial_data()
+    await migrate_add_estoque_type()
 
 
 @app.on_event("shutdown")

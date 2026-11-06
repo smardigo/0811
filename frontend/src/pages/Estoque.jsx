@@ -19,7 +19,7 @@ export default function Estoque() {
   const [moving, setMoving] = useState(null);
 
   const load = async () => {
-    const r = await apiClient.get("/estoque");
+    const r = await apiClient.get("/estoque", { params: { type: "revenda" } });
     setItems(r.data);
     const m = await apiClient.get("/estoque/movimentos");
     setMovs(m.data);
@@ -30,12 +30,9 @@ export default function Estoque() {
 
   const save = async () => {
     try {
-      if (editing.id) {
-        await apiClient.patch(`/estoque/${editing.id}`, editing);
-      } else {
-        await apiClient.post("/estoque", editing);
-      }
-      toast.success("Insumo salvo");
+      if (editing.id) await apiClient.patch(`/estoque/${editing.id}`, { ...editing, type: "revenda" });
+      else await apiClient.post("/estoque", { ...editing, type: "revenda" });
+      toast.success("Item salvo");
       setEditing(null);
       load();
     } catch (e) {
@@ -71,11 +68,11 @@ export default function Estoque() {
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="font-display text-3xl font-bold text-stone-900">Estoque</h1>
-          <p className="text-sm text-stone-500 mt-1">Insumos, entradas, saídas e alertas</p>
+          <h1 className="font-display text-3xl font-bold text-stone-900">Revenda</h1>
+          <p className="text-sm text-stone-500 mt-1">Produtos prontos de prateleira (refri, bombom, leite...)</p>
         </div>
-        <Button onClick={() => setEditing({ name: "", unit: "un", quantity: 0, min_quantity: 0, cost_price: 0, supplier: "" })} data-testid="new-estoque-btn" className="bg-amber-600 hover:bg-amber-700">
-          <Plus className="h-4 w-4 mr-1" /> Novo insumo
+        <Button onClick={() => setEditing({ name: "", unit: "un", quantity: 0, min_quantity: 0, cost_price: 0, supplier: "", type: "revenda" })} data-testid="new-estoque-btn" className="bg-amber-600 hover:bg-amber-700">
+          <Plus className="h-4 w-4 mr-1" /> Novo item
         </Button>
       </div>
 
@@ -95,7 +92,7 @@ export default function Estoque() {
 
       <Tabs defaultValue="items">
         <TabsList>
-          <TabsTrigger value="items" data-testid="tab-items">Insumos</TabsTrigger>
+          <TabsTrigger value="items" data-testid="tab-items">Itens</TabsTrigger>
           <TabsTrigger value="movs" data-testid="tab-movs">Movimentações</TabsTrigger>
         </TabsList>
 
@@ -137,7 +134,7 @@ export default function Estoque() {
                 </div>
               );
             })}
-            {items.length === 0 && <div className="p-8 text-center text-stone-500">Nenhum insumo</div>}
+            {items.length === 0 && <div className="p-8 text-center text-stone-500">Nenhum item de revenda</div>}
           </Card>
         </TabsContent>
 
@@ -163,7 +160,7 @@ export default function Estoque() {
       {editing && (
         <Dialog open onOpenChange={() => setEditing(null)}>
           <DialogContent data-testid="estoque-dialog">
-            <DialogHeader><DialogTitle>{editing.id ? "Editar insumo" : "Novo insumo"}</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>{editing.id ? "Editar item" : "Novo item de revenda"}</DialogTitle></DialogHeader>
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2"><Label>Nome *</Label>
                 <Input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} data-testid="estoque-name-input" /></div>
