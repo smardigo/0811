@@ -43,7 +43,8 @@ export default function Cardapio() {
     // fetch costs in bg
     const costsMap = {};
     await Promise.all(p.data.map(async (prod) => {
-      if (prod.production_mode === "pronto" && (prod.recipe?.length || Object.keys(prod.recipe_by_flavor || {}).length)) {
+      const hasRecipe = (prod.recipe?.length || prod.base_recipe?.length || Object.keys(prod.recipe_by_flavor || {}).length);
+      if (prod.production_mode === "pronto" && hasRecipe) {
         try {
           const flavor = prod.is_pizza ? (prod.pizza_flavors?.[0]) : null;
           const r = await apiClient.get(`/products/${prod.id}/custo`, { params: { flavor: flavor || undefined } });
@@ -211,12 +212,12 @@ function RecipeEditor({ list, onChange, insumos, testid }) {
         return (
           <div key={i} className="flex gap-1.5 items-center" data-testid={`${testid}-row-${i}`}>
             <Select value={r.insumo_id} onValueChange={(v) => upd(i, { insumo_id: v })}>
-              <SelectTrigger className="flex-1"><SelectValue placeholder="Insumo..." /></SelectTrigger>
+              <SelectTrigger className="flex-1" data-testid={`${testid}-insumo-${i}`}><SelectValue placeholder="Insumo..." /></SelectTrigger>
               <SelectContent className="max-h-64">
                 {insumos.map((x) => <SelectItem key={x.id} value={x.id}>{x.name} ({x.unit})</SelectItem>)}
               </SelectContent>
             </Select>
-            <Input type="number" step="0.001" className="w-24" value={r.quantity} onChange={(e) => upd(i, { quantity: parseFloat(e.target.value) || 0 })} />
+            <Input type="number" step="0.001" className="w-24" value={r.quantity} onChange={(e) => upd(i, { quantity: parseFloat(e.target.value) || 0 })} data-testid={`${testid}-qty-${i}`} />
             <div className="w-10 text-xs text-stone-500 shrink-0">{ins?.unit || "—"}</div>
             <Button size="icon" variant="ghost" onClick={() => del(i)}><X className="h-3.5 w-3.5" /></Button>
           </div>
@@ -376,7 +377,13 @@ function ProductEditor({ data, setData, cats, insumos, prontos, onClose, onSave 
           <TabsContent value="recipe" className="mt-4 space-y-4">
             <div>
               <Label className="font-semibold">Modo de baixa no estoque</Label>
-              <Select value={data.production_mode} onValueChange={(v) => upd("production_mode", v)}>
+              <Select value={data.production_mode || "none"} onValueChange={(v) => {
+                setData((s) => ({
+                  ...s,
+                  production_mode: v,
+                  ...(v !== "revenda" ? { stock_item_id: null, tracks_stock: false } : {}),
+                }));
+              }}>
                 <SelectTrigger data-testid="prod-edit-mode"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">Nenhum controle de estoque</SelectItem>

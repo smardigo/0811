@@ -22,7 +22,7 @@ export default function Insumos() {
   const load = async () => {
     const r = await apiClient.get("/estoque", { params: { type: "insumo" } });
     setItems(r.data);
-    const m = await apiClient.get("/estoque/movimentos");
+    const m = await apiClient.get("/estoque/movimentos", { params: { item_type: "insumo" } });
     setMovs(m.data);
     window.dispatchEvent(new Event("estoque-changed"));
   };
@@ -60,7 +60,7 @@ export default function Insumos() {
     } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
   };
 
-  const insumosMovs = movs.filter((m) => items.some((i) => i.id === m.item_id));
+  const insumosMovs = movs;
   const alertas = items.filter((i) => i.quantity <= i.min_quantity);
 
   return (
@@ -159,7 +159,7 @@ export default function Insumos() {
                 <Input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} data-testid="insumo-name-input" placeholder="Ex: Farinha de trigo" /></div>
               <div><Label>Unidade</Label>
                 <Select value={editing.unit} onValueChange={(v) => setEditing({ ...editing, unit: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger data-testid="insumo-unit-trigger"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="un">unidade</SelectItem>
                     <SelectItem value="kg">kg</SelectItem>

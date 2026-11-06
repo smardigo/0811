@@ -21,7 +21,7 @@ export default function Estoque() {
   const load = async () => {
     const r = await apiClient.get("/estoque", { params: { type: "revenda" } });
     setItems(r.data);
-    const m = await apiClient.get("/estoque/movimentos");
+    const m = await apiClient.get("/estoque/movimentos", { params: { item_type: "revenda" } });
     setMovs(m.data);
     window.dispatchEvent(new Event("estoque-changed"));
   };

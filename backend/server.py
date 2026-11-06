@@ -1164,6 +1164,8 @@ async def estoque_alertas(_: dict = Depends(require_any)):
 
 @api.post("/estoque")
 async def create_estoque(i: EstoqueItemIn, _: dict = Depends(require_gerente)):
+    if i.type not in ("revenda", "insumo", "pronto"):
+        raise HTTPException(400, "Tipo inválido")
     doc = EstoqueItem(**i.model_dump()).model_dump()
     await db.estoque_items.insert_one(doc)
     return {k: v for k, v in doc.items() if k != "_id"}
@@ -1171,13 +1173,25 @@ async def create_estoque(i: EstoqueItemIn, _: dict = Depends(require_gerente)):
 
 @api.patch("/estoque/{iid}")
 async def update_estoque(iid: str, i: EstoqueItemIn, _: dict = Depends(require_gerente)):
-    await db.estoque_items.update_one({"id": iid}, {"$set": i.model_dump()})
+    existing = await db.estoque_items.find_one({"id": iid}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Item não encontrado")
+    upd = i.model_dump(exclude_unset=True)
+    # preserve type if client didn't explicitly send it
+    if "type" not in i.model_fields_set:
+        upd.pop("type", None)
+    elif upd.get("type") not in ("revenda", "insumo", "pronto"):
+        raise HTTPException(400, "Tipo inválido")
+    if upd:
+        await db.estoque_items.update_one({"id": iid}, {"$set": upd})
     return await db.estoque_items.find_one({"id": iid}, {"_id": 0})
 
 
 @api.delete("/estoque/{iid}")
 async def delete_estoque(iid: str, _: dict = Depends(require_gerente)):
-    await db.estoque_items.delete_one({"id": iid})
+    res = await db.estoque_items.delete_one({"id": iid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Item não encontrado")
     return {"ok": True}
 
 
@@ -1210,11 +1224,15 @@ async def estoque_movimento(m: EstoqueMovimentoIn, user: dict = Depends(require_
 
 
 @api.get("/estoque/movimentos")
-async def list_movimentos(item_id: Optional[str] = None, _: dict = Depends(require_any)):
-    q = {}
+async def list_movimentos(item_id: Optional[str] = None, item_type: Optional[str] = None,
+                          _: dict = Depends(require_any)):
+    q: dict = {}
     if item_id:
         q["item_id"] = item_id
-    return await db.estoque_mov.find(q, {"_id": 0}).sort("date", -1).limit(200).to_list(200)
+    if item_type:
+        ids = [i["id"] async for i in db.estoque_items.find({"type": item_type}, {"id": 1})]
+        q["item_id"] = {"$in": ids}
+    return await db.estoque_mov.find(q, {"_id": 0}).sort("date", -1).limit(300).to_list(300)
 
 
 
@@ -1398,9 +1416,9 @@ async def descartar_batch(bid: str, body: DescarteIn, user: dict = Depends(requi
 
 
 async def _consume_pronto(pronto: dict, qty: float, ref: str, user_name: str):
-    """FIFO-consume quantity from production_batches of this estoque pronto item."""
-    await db.estoque_items.update_one({"id": pronto["id"]}, {"$inc": {"quantity": -qty}})
+    """FIFO-consume quantity from production_batches; cap at what's really available."""
     remaining = qty
+    consumed = 0.0
     cursor = db.production_batches.find(
         {"estoque_item_id": pronto["id"], "quantity_remaining": {"$gt": 0}},
     ).sort([("expiry_date", 1), ("produced_at", 1)])
@@ -1410,10 +1428,14 @@ async def _consume_pronto(pronto: dict, qty: float, ref: str, user_name: str):
         take = min(remaining, b["quantity_remaining"])
         await db.production_batches.update_one({"id": b["id"]}, {"$inc": {"quantity_remaining": -take}})
         remaining -= take
+        consumed += take
+    if consumed <= 0:
+        return
+    await db.estoque_items.update_one({"id": pronto["id"]}, {"$inc": {"quantity": -consumed}})
     await db.estoque_mov.insert_one({
         "id": new_id(), "item_id": pronto["id"],
         "item_name": pronto.get("name", "pronto"),
-        "type": "saida", "quantity": qty,
+        "type": "saida", "quantity": consumed,
         "reason": ref, "user_name": user_name, "date": now_iso(),
     })
 
@@ -1422,7 +1444,9 @@ async def _apply_sale_consumption(it: dict, order_number: int, user_name: str):
     prod = await db.products.find_one({"id": it["product_id"]}, {"_id": 0})
     if not prod:
         return
-    mode = prod.get("production_mode") or ("revenda" if prod.get("stock_item_id") else "none")
+    mode = prod.get("production_mode")
+    if mode in (None, "", "none") and prod.get("stock_item_id"):
+        mode = "revenda"
     qty = float(it.get("quantity", 1))
     ref = f"Venda comanda #{order_number}"
     if mode == "revenda" and prod.get("stock_item_id"):
@@ -1453,14 +1477,17 @@ async def _apply_sale_consumption(it: dict, order_number: int, user_name: str):
 
 
 async def migrate_add_estoque_type():
-    """Ensure legacy estoque_items have a type (defaults to 'revenda')."""
+    """Ensure legacy estoque_items have a type (defaults to 'revenda'); set production_mode only for products that never had one."""
     await db.estoque_items.update_many(
         {"type": {"$exists": False}}, {"$set": {"type": "revenda"}}
     )
-    # Products: if they have stock_item_id and no production_mode set, assume revenda
     await db.products.update_many(
-        {"stock_item_id": {"$ne": None}, "production_mode": {"$in": [None, "none"]}},
+        {"production_mode": {"$exists": False}, "stock_item_id": {"$ne": None}},
         {"$set": {"production_mode": "revenda"}}
+    )
+    await db.products.update_many(
+        {"production_mode": {"$exists": False}},
+        {"$set": {"production_mode": "none"}}
     )
 
 
