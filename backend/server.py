@@ -742,7 +742,14 @@ async def update_product(pid: str, p: ProductIn, _: dict = Depends(require_geren
 
 @api.delete("/products/{pid}")
 async def delete_product(pid: str, _: dict = Depends(require_gerente)):
-    await db.products.delete_one({"id": pid})
+    res = await db.products.delete_one({"id": pid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Produto não encontrado")
+    # Cascade: remove linked pronto items and their batches
+    pronto_items = [p["id"] async for p in db.estoque_items.find({"type": "pronto", "product_id": pid}, {"id": 1})]
+    if pronto_items:
+        await db.estoque_items.delete_many({"id": {"$in": pronto_items}})
+    await db.production_batches.delete_many({"product_id": pid})
     return {"ok": True}
 
 
@@ -1189,9 +1196,12 @@ async def update_estoque(iid: str, i: EstoqueItemIn, _: dict = Depends(require_g
 
 @api.delete("/estoque/{iid}")
 async def delete_estoque(iid: str, _: dict = Depends(require_gerente)):
-    res = await db.estoque_items.delete_one({"id": iid})
-    if not res.deleted_count:
+    item = await db.estoque_items.find_one({"id": iid}, {"type": 1})
+    if not item:
         raise HTTPException(404, "Item não encontrado")
+    await db.estoque_items.delete_one({"id": iid})
+    if item.get("type") == "pronto":
+        await db.production_batches.delete_many({"estoque_item_id": iid})
     return {"ok": True}
 
 
@@ -1227,11 +1237,11 @@ async def estoque_movimento(m: EstoqueMovimentoIn, user: dict = Depends(require_
 async def list_movimentos(item_id: Optional[str] = None, item_type: Optional[str] = None,
                           _: dict = Depends(require_any)):
     q: dict = {}
-    if item_id:
-        q["item_id"] = item_id
     if item_type:
         ids = [i["id"] async for i in db.estoque_items.find({"type": item_type}, {"id": 1})]
-        q["item_id"] = {"$in": ids}
+        q["item_id"] = {"$in": ([item_id] if item_id and item_id in ids else (ids if not item_id else []))}
+    elif item_id:
+        q["item_id"] = item_id
     return await db.estoque_mov.find(q, {"_id": 0}).sort("date", -1).limit(300).to_list(300)
 
 
