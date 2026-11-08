@@ -32,8 +32,8 @@ jobs:
         shell: pwsh
         run: |
           "REACT_APP_BACKEND_URL=" | Out-File -Encoding ascii .env.production.local
-          npm install
-          npm install ajv@^8.0.0 --save-dev
+          npm install --legacy-peer-deps
+          npm install ajv@^8.0.0 --save-dev --legacy-peer-deps
           npm run build
 
       # -----------------------------------------------------------
