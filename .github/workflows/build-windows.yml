@@ -1,1 +1,128 @@
-name: Build Windows Installer on: push: tags: ['v*'] workflow_dispatch: inputs: version: description: 'Version (ex: 1.0.0)' required: true default: '1.0.0' jobs: build: runs-on: windows-latest env: APP_VERSION: $%7B%7B+github.event.inputs.version+%7C%7C+github.ref_name+%7D%7D steps: - uses: actions/checkout@v4 # ----------------------------------------------------------- # 1) Frontend build # ----------------------------------------------------------- - uses: actions/setup-node@v4 with: node-version: '20' - name: Build frontend (React) working-directory: frontend shell: pwsh run: | "REACT_APP_BACKEND_URL=" | Out-File -Encoding ascii .env.production.local npm install npm install ajv@^8.0.0 --save-dev npm run build # ----------------------------------------------------------- # 2) Python / backend / launcher # ----------------------------------------------------------- - uses: actions/setup-python@v5 with: python-version: '3.11' - name: Install python deps shell: pwsh run: | python -m pip install --upgrade pip pip install -r backend/requirements.txt pip install -r desktop/requirements.txt pip install pyinstaller pywebview - name: PyInstaller build working-directory: desktop shell: pwsh run: pyinstaller server.spec --noconfirm # ----------------------------------------------------------- # 3) Bundle MongoDB portable binary # ----------------------------------------------------------- - name: Download embedded MongoDB shell: pwsh run: | $ver = "7.0.14" $url = "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-$ver.zip" curl.exe -Lo mongo.zip $url Expand-Archive mongo.zip -DestinationPath mongo-extract $src = (Get-ChildItem mongo-extract -Directory | Select-Object -First 1).FullName New-Item -Force -ItemType Directory dist\AssuncaoPaladini\mongodb\bin | Out-Null Copy-Item "$src\bin\mongod.exe" dist\AssuncaoPaladini\mongodb\bin\ # ----------------------------------------------------------- # 4) Copy React build next to the exe # ----------------------------------------------------------- - name: Bundle React build shell: pwsh run: | New-Item -Force -ItemType Directory dist\AssuncaoPaladini\frontend | Out-Null Copy-Item frontend\build\* dist\AssuncaoPaladini\frontend\ -Recurse -Force # ----------------------------------------------------------- # 5) Inno Setup (.exe) # ----------------------------------------------------------- - name: Install Inno Setup run: choco install innosetup -y --no-progress - name: Build Inno Setup installer shell: pwsh working-directory: installer run: | New-Item -Force -ItemType Directory ..\dist-installer | Out-Null & "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe" inno-setup.iss Get-ChildItem ..\dist-installer # ----------------------------------------------------------- # 6) WiX (.msi) # ----------------------------------------------------------- - name: Install WiX run: choco install wixtoolset -y --no-progress - name: Build MSI shell: pwsh working-directory: installer/wix run: | $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin" if (-not (Test-Path $wix)) { $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.11\bin" } & "$wix\heat.exe" dir "..\..\dist\AssuncaoPaladini" -cg AppFiles -dr INSTALLFOLDER -gg -srd -sfrag -scom -sreg -out AppFiles.wxs & "$wix\candle.exe" Product.wxs AppFiles.wxs & "$wix\light.exe" -ext WixUIExtension Product.wixobj AppFiles.wixobj -b "..\..\dist\AssuncaoPaladini" -o "..\..\dist-installer\AssuncaoPaladini-$env:APP_VERSION.msi" # ----------------------------------------------------------- # 7) Upload artifacts / create release # ----------------------------------------------------------- - uses: actions/upload-artifact@v4 with: name: AssuncaoPaladini-Windows-$%7B%7B+env.APP_VERSION+%7D%7D path: dist-installer/* - name: Create GitHub Release if: startsWith(github.ref, 'refs/tags/v') uses: softprops/action-gh-release@v2 with: files: | dist-installer/*.exe dist-installer/*.msi 
+name: Build Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (ex: 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      APP_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      # -----------------------------------------------------------
+      # 1) Frontend build
+      # -----------------------------------------------------------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build frontend (React)
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          "REACT_APP_BACKEND_URL=" | Out-File -Encoding ascii .env.production.local
+          npm install
+          npm install ajv@^8.0.0 --save-dev
+          npm run build
+
+      # -----------------------------------------------------------
+      # 2) Python / backend / launcher
+      # -----------------------------------------------------------
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python deps
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r desktop/requirements.txt
+          pip install pyinstaller pywebview
+
+      - name: PyInstaller build
+        working-directory: desktop
+        shell: pwsh
+        run: pyinstaller server.spec --noconfirm
+
+      # -----------------------------------------------------------
+      # 3) Bundle MongoDB portable binary
+      # -----------------------------------------------------------
+      - name: Download embedded MongoDB
+        shell: pwsh
+        run: |
+          $ver = "7.0.14"
+          $url = "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-$ver.zip"
+          curl.exe -Lo mongo.zip $url
+          Expand-Archive mongo.zip -DestinationPath mongo-extract
+          $src = (Get-ChildItem mongo-extract -Directory | Select-Object -First 1).FullName
+          New-Item -Force -ItemType Directory dist\AssuncaoPaladini\mongodb\bin | Out-Null
+          Copy-Item "$src\bin\mongod.exe" dist\AssuncaoPaladini\mongodb\bin\
+
+      # -----------------------------------------------------------
+      # 4) Copy React build next to the exe
+      # -----------------------------------------------------------
+      - name: Bundle React build
+        shell: pwsh
+        run: |
+          New-Item -Force -ItemType Directory dist\AssuncaoPaladini\frontend | Out-Null
+          Copy-Item frontend\build\* dist\AssuncaoPaladini\frontend\ -Recurse -Force
+
+      # -----------------------------------------------------------
+      # 5) Inno Setup (.exe)
+      # -----------------------------------------------------------
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build Inno Setup installer
+        shell: pwsh
+        working-directory: installer
+        run: |
+          New-Item -Force -ItemType Directory ..\dist-installer | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe" inno-setup.iss
+          Get-ChildItem ..\dist-installer
+
+      # -----------------------------------------------------------
+      # 6) WiX (.msi)
+      # -----------------------------------------------------------
+      - name: Install WiX
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Build MSI
+        shell: pwsh
+        working-directory: installer/wix
+        run: |
+          $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin"
+          if (-not (Test-Path $wix)) {
+            $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.11\bin"
+          }
+          & "$wix\heat.exe" dir "..\..\dist\AssuncaoPaladini" -cg AppFiles -dr INSTALLFOLDER -gg -srd -sfrag -scom -sreg -out AppFiles.wxs
+          & "$wix\candle.exe" Product.wxs AppFiles.wxs
+          & "$wix\light.exe" -ext WixUIExtension Product.wixobj AppFiles.wixobj -b "..\..\dist\AssuncaoPaladini" -o "..\..\dist-installer\AssuncaoPaladini-$env:APP_VERSION.msi"
+
+      # -----------------------------------------------------------
+      # 7) Upload artifacts / create release
+      # -----------------------------------------------------------
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AssuncaoPaladini-Windows-${{ env.APP_VERSION }}
+          path: dist-installer/*
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-installer/*.exe
+            dist-installer/*.msi
